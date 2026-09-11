@@ -464,8 +464,10 @@ sealed class MainForm : Form
             "croco-editor", "claude_notes");
     string memoDraftPath, memoOverride, memoNotePath;
     bool memoVisible, memoEditable;
+    bool activeDirty; // memoDraftPath＝アクティブなタブの下書きが未編集か
     DateTime? memoMtime;
     System.Windows.Forms.Timer memoTimer;
+    System.Windows.Forms.Timer docWatchTimer; // アクティブな下書き本体の外部変更監視
     readonly System.Collections.Generic.List<string> pendingHandoff =
         new System.Collections.Generic.List<string>(); // webview 準備前に来た受け渡し
 
@@ -675,20 +677,23 @@ sealed class MainForm : Form
         }
     }
 
-    // memo-watch\n<下書きパス>\n<手動指定パス>\n<表示 0|1>\n<編集 0|1>
+    // memo-watch\n<下書きパス>\n<手動指定パス>\n<表示 0|1>\n<編集 0|1>\n<dirty 0|1>
+    // 最後の <dirty> は下書き本体（memoDraftPath）＝アクティブなタブの話で、
+    // メモ自体の編集モード（<編集>）とは別物。DocWatchTick が使う。
     void ConfigureMemo(string[] p)
     {
         memoDraftPath = p.Length > 0 && p[0].Length > 0 ? p[0] : null;
         memoOverride = p.Length > 1 && p[1].Length > 0 ? p[1] : null;
         memoVisible = p.Length > 2 && p[2].Trim() == "1";
         memoEditable = p.Length > 3 && p[3].Trim() == "1";
+        activeDirty = p.Length > 4 && p[4].Trim() == "1";
 
         memoNotePath = memoOverride != null
             ? memoOverride
             : (memoDraftPath != null ? NotePathFor(memoDraftPath) : null);
         memoMtime = null;
         Log.W("ConfigureMemo draft=" + (memoDraftPath ?? "-") + " note=" + (memoNotePath ?? "-") +
-              " vis=" + memoVisible + " edit=" + memoEditable);
+              " vis=" + memoVisible + " edit=" + memoEditable + " dirty=" + activeDirty);
 
         if (memoTimer == null)
         {
@@ -697,6 +702,20 @@ sealed class MainForm : Form
             memoTimer.Tick += (s, e) => MemoTick();
         }
         memoTimer.Enabled = memoVisible && !memoEditable && memoNotePath != null;
+
+        // アクティブなタブの下書き本体の外部変更監視。メモ広場の表示可否とは
+        // 無関係に常時（未編集の間だけ）見る。editor_app.py _autosave_files の
+        // 「dirtyでなければ黙って読み直す」半分（2026-09-11、本人の実地報告で
+        // 発覚：croco-editorで開きっぱなしのファイルを外部エディタで書き換えても
+        // 古い内容のまま固まっていた。よそのテキストエディタで開くと最新が出る
+        // のに、自作の方だけ追従しないのはおかしい、との指摘）。
+        if (docWatchTimer == null)
+        {
+            docWatchTimer = new System.Windows.Forms.Timer();
+            docWatchTimer.Interval = 1000;
+            docWatchTimer.Tick += (s, e) => DocWatchTick();
+        }
+        docWatchTimer.Enabled = memoDraftPath != null;
 
         SendMemo(force: true);
     }
@@ -708,6 +727,35 @@ sealed class MainForm : Form
         try { if (File.Exists(memoNotePath)) m = File.GetLastWriteTimeUtc(memoNotePath); }
         catch { }
         if (m != memoMtime) SendMemo(force: false);
+    }
+
+    void DocWatchTick()
+    {
+        if (activeDirty || memoDraftPath == null || !File.Exists(memoDraftPath)) return;
+        string full;
+        try { full = Path.GetFullPath(memoDraftPath); }
+        catch (Exception ex) { Log.W("DocWatchTick: " + ex.Message); return; }
+
+        DateTime disk;
+        try { disk = File.GetLastWriteTimeUtc(full); }
+        catch (Exception ex) { Log.W("DocWatchTick: " + ex.Message); return; }
+
+        DateTime known;
+        if (!knownMtime.TryGetValue(full, out known))
+        {
+            // 基準が無ければここで確立するだけ（まだ「変わった」とは言えない）。
+            RememberMtime(full);
+            return;
+        }
+        if (disk == known) return;
+
+        string fresh;
+        try { fresh = ReadTextSmart(full); }
+        catch (Exception ex) { Log.W("DocWatchTick read: " + ex.Message); return; }
+        RememberMtime(full);
+        string crlf = fresh.Contains("\r\n") ? "1" : "0";
+        Log.W("外部変更を検知し追従: " + full);
+        Post("externalUpdate\n" + full + "\n" + crlf + "\n" + fresh.Replace("\r\n", "\n"));
     }
 
     void SendMemo(bool force)
@@ -1124,7 +1172,7 @@ sealed class MainForm : Form
         else if (head == "preview") { if (miPreview != null) miPreview.Checked = body.Trim() == "1"; }
         else if (head == "memowrap") { if (miMemo != null) miMemo.Checked = body.Trim() == "1"; }
         else if (head == "memoedit") { if (miMemoEdit != null) miMemoEdit.Checked = body.Trim() == "1"; }
-        else if (head == "memo-watch") ConfigureMemo(SplitN(body, 4));
+        else if (head == "memo-watch") ConfigureMemo(SplitN(body, 5));
         else if (head == "memo-save") SaveMemo(body);
         else if (head == "export-bytes")
         {

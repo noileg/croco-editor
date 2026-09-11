@@ -155,7 +155,7 @@ function toggleMemoEdit() {
 }
 function updateMemoWatch() {
   const t = active();
-  bridge.memoWatch(t ? t.path : null, t ? t.memoOverride : null, memoVisible, memoEditable);
+  bridge.memoWatch(t ? t.path : null, t ? t.memoOverride : null, memoVisible, memoEditable, t ? t.dirty : false);
   pushSession();
 }
 
@@ -316,7 +316,10 @@ function setDirty(t, d) {
   if (t.dirty === d) return;
   t.dirty = d;
   renderTabs();
-  if (t.id === activeId) sendTitle();
+  if (t.id === activeId) {
+    sendTitle();
+    updateMemoWatch(); // 殻へ dirty を伝え直す（外部変更の追従可否に使う）
+  }
   bridge.setAnyDirty(tabs.some((x) => x.dirty));
   pushSession();
 }
@@ -413,10 +416,22 @@ bridge.onRestore(({ tabs: saved, active: activeIdx, memoVisible: mv, memoEditabl
   if (mv) toggleMemo(true);
 });
 bridge.onOpened(({ path, crlf, text }) => {
-  // 既に同じファイルを開いていればそれを出す
+  // 既に同じファイルを開いていればそのタブへ切り替える。殻は毎回ファイルを
+  // 読み直してから渡してくる（OpenAsTab）ので、未編集（dirtyでない）なら
+  // その最新の中身に差し替える。でないと同じファイルを何度開き直しても
+  // 最初に開いたときの内容のまま固まる（2026-09-11、本人指摘で発覚：
+  // 「開く際は完全に開くファイルに依存しとけよ」）。dirtyなタブは未保存の
+  // 編集を黙って消さないよう据え置く（今出ているタブに*が付いたまま）。
   const exist = path && tabs.find((t) => t.path === path);
   if (exist) {
     switchTab(exist.id);
+    if (!exist.dirty) {
+      exist.crlf = crlf;
+      exist.conflict = false;
+      ed.setText(text, true); // silent＝dirty化しない
+      exist.state = ed.getState();
+      refresh(text);
+    }
     return;
   }
   // 今出ているタブが空の無題タブ（パス無し・未編集・本文なし）ならそこへ読み込む。
@@ -501,6 +516,23 @@ bridge.onReloaded(({ reqId, crlf, text }) => {
     closeAfterSave.delete(reqId);
     closeTab(t.id, true); // 外部の内容に差し替えた上で、元々の「閉じる」を続行
   }
+});
+bridge.onExternalUpdate(({ path, crlf, text }) => {
+  // アクティブなタブが未編集のまま外部で変わった。殻からの一方的な通知
+  // （保存は絡まない）。念のためここでも「今もそのパスのまま・未編集か」を
+  // 確認してから差し替える（殻が検知した瞬間と届いた瞬間の間にタブを
+  // 切り替えたり編集し始めたりした場合に備える）。
+  const t = tabs.find((x) => x.path === path);
+  if (!t || t.dirty) return;
+  t.crlf = crlf;
+  if (t.id === activeId) {
+    ed.setText(text, true); // silent＝dirty化しない
+    t.state = ed.getState();
+    refresh(text);
+  } else {
+    t.state = ed.makeState(text);
+  }
+  renderTabs();
 });
 bridge.onFlushSave(() => {
   const t = active();

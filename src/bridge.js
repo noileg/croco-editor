@@ -9,6 +9,12 @@
 //                                          タブの自動保存を止める。以後の保存で再度選択肢）
 //     reloaded\n<reqId>\n<crlf>\n<本文>   外部の内容を読み込む」を選んだ。
 //                                          このタブを書かずに差し替える
+//     externalUpdate\n<パス>\n<crlf>\n<本文>
+//       アクティブなタブが未編集のまま外部でファイルが変わったのを殻が
+//       ポーリングで検知（memo-watch の draft パスを見張る、1秒間隔）。
+//       保存要求は絡まない一方的な通知。該当タブが今も未編集ならその場で
+//       差し替える（editor_app.py _autosave_files の「dirtyでなければ黙って
+//       読み直す」半分。保存前の競合確認とは別物）
 //     flushSave                            閉じる前に本文つき save を返せ
 //     menu\n<cmd>                          メニュー項目が押された
 //   JS → 殻 :
@@ -33,6 +39,7 @@ const handlers = {
   saved: [],
   conflict: [],
   reloaded: [],
+  externalUpdate: [],
   flushSave: [],
   menu: [],
   restore: [],
@@ -93,6 +100,9 @@ if (wv) {
     } else if (head === "reloaded") {
       const [reqId, crlf, text] = splitN(body, 3);
       handlers.reloaded.forEach((cb) => cb({ reqId: Number(reqId), crlf: crlf === "1", text }));
+    } else if (head === "externalUpdate") {
+      const [path, crlf, text] = splitN(body, 3);
+      handlers.externalUpdate.forEach((cb) => cb({ path, crlf: crlf === "1", text }));
     } else if (head === "flushSave") {
       handlers.flushSave.forEach((cb) => cb());
     } else if (head === "menu") {
@@ -123,6 +133,7 @@ export const onOpened = (cb) => handlers.opened.push(cb);
 export const onSaved = (cb) => handlers.saved.push(cb);
 export const onConflict = (cb) => handlers.conflict.push(cb);
 export const onReloaded = (cb) => handlers.reloaded.push(cb);
+export const onExternalUpdate = (cb) => handlers.externalUpdate.push(cb);
 export const onFlushSave = (cb) => handlers.flushSave.push(cb);
 export const onMenu = (cb) => handlers.menu.push(cb);
 export const onRestore = (cb) => handlers.restore.push(cb);
@@ -134,11 +145,14 @@ export function sendExportBytes(path, u8) {
 }
 
 // メモ広場：見張る対象と表示状態を殻に伝える／編集内容を書き戻す。
-export function memoWatch(draftPath, overridePath, visible, editable) {
+// dirty も一緒に伝える——アクティブなタブの下書きが外部でも変わったとき、
+// 未編集なら殻が黙って読み直して externalUpdate で返す（下参照）ための判定に使う。
+export function memoWatch(draftPath, overridePath, visible, editable, dirty) {
   if (wv) {
     wv.postMessage(
       "memo-watch\n" + (draftPath || "") + "\n" + (overridePath || "") +
-        "\n" + (visible ? "1" : "0") + "\n" + (editable ? "1" : "0"),
+        "\n" + (visible ? "1" : "0") + "\n" + (editable ? "1" : "0") +
+        "\n" + (dirty ? "1" : "0"),
     );
   }
 }
