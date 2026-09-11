@@ -1,0 +1,18 @@
+# 依存とビルド出力
+node_modules/
+csharp/out/
+
+# esbuild のソースマップ（build.mjs が再生成。bundle.js 本体はコミットする）
+dist/*.map
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# テストの一時ファイル
+test/js_out.json
+test/*_err.txt
+
+# メモ広場のノート（実行時に書かれる、下書きごとの手元データ）
+claude_notes/

@@ -1,0 +1,317 @@
+/* 新版のスタイル。現行 editor_app.py の見た目に寄せる（見出し倍率など）。 */
+:root {
+  --edit-font: 11pt;
+  --edit-family: "Yu Gothic UI";
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  font-family: "Yu Gothic UI", "Meiryo UI", Meiryo, sans-serif;
+}
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  padding: 3px 6px 0;
+  background: #e9e7e2;
+  border-bottom: 1px solid #d8d4cc;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+#tabs:empty {
+  display: none;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid #d8d4cc;
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  background: #dfdcd6;
+  color: #555;
+  cursor: default;
+  max-width: 240px;
+}
+.tab.active {
+  background: #fff;
+  color: #222;
+}
+.tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-close {
+  color: #999;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.tab-close:hover {
+  color: #c01c1c;
+}
+
+#toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  border-bottom: 1px solid #d8d4cc;
+  background: #f6f5f2;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+#toolbar input[type="number"] {
+  width: 6em;
+}
+#presets button {
+  margin-right: 2px;
+  padding: 2px 6px;
+  font-size: 12px;
+}
+
+#split {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+#editor {
+  flex: 0 0 50%; /* 仕切りのドラッグで % を書き換える。session に覚える */
+  min-width: 140px; /* editor_app.py MIN_PANE */
+  overflow: auto;
+}
+#preview,
+#memo {
+  flex: 1 1 0;
+  min-width: 140px;
+  overflow: auto;
+}
+.gutter {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: #d8d4cc;
+}
+.gutter:hover {
+  background: #b9b4aa;
+}
+#split.no-preview .gutter {
+  display: none;
+}
+#memo {
+  border-left: 1px solid #d8d4cc;
+  padding: 16px 18px;
+  line-height: 1.7;
+  font-size: var(--edit-font);
+  font-family: var(--edit-family), "Meiryo UI", Meiryo, sans-serif;
+  background: #fbfaf8;
+  overflow-anchor: none;
+}
+#memo.none {
+  color: #999;
+}
+#memo textarea {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  resize: none;
+  font: inherit;
+  background: transparent;
+}
+
+#statusbar {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  padding: 3px 10px;
+  border-top: 1px solid #d8d4cc;
+  background: #f6f5f2;
+  font-size: 12px;
+  color: #555;
+}
+#count {
+  font-variant-numeric: tabular-nums;
+}
+#count.over {
+  color: #c01c1c;
+  font-weight: bold;
+}
+#pos,
+#pt {
+  color: #666;
+  font-variant-numeric: tabular-nums;
+}
+#path {
+  margin-left: auto;
+  color: #666;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  direction: rtl; /* あふれたら先頭側を … にする */
+}
+#path.conflict {
+  color: #c01c28; /* editor_app.py _update_status の doc.conflict と同じ色 */
+  font-weight: bold;
+  direction: ltr; /* 警告文は先頭から読めないと意味がない */
+}
+.hidden {
+  display: none !important;
+}
+
+/* 右クリック文脈メニュー */
+#ctxmenu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 200px;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #b8b4ac;
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 13px;
+}
+.ctx-item {
+  padding: 5px 16px;
+  white-space: nowrap;
+  cursor: default;
+}
+.ctx-item:hover {
+  background: #2b6cb0;
+  color: #fff;
+}
+.ctx-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: #e0ddd6;
+}
+#preview .img-ph {
+  color: #999;
+}
+#split.no-preview #editor {
+  border-right: none;
+}
+
+/* CodeMirror */
+.cm-editor {
+  height: 100%;
+  font-size: var(--edit-font);
+}
+.cm-editor .cm-content {
+  font-family: var(--edit-family), "Meiryo UI", Meiryo, sans-serif;
+  line-height: 1.7;
+}
+.cm-over {
+  background: #ffd9d9; /* editor_app.py "over" タグ */
+}
+.cm-tag {
+  color: #8a8a8a; /* editor_app.py "utag" タグ */
+}
+.cm-underline {
+  text-decoration: underline; /* editor_app.py "underline"/ublock_spans タグ */
+}
+.cm-underline2 {
+  text-decoration: underline;
+  background: #dcebfb; /* editor_app.py "underline2" タグ（tkinterに二重下線が無く、背景色で区別している） */
+}
+.cm-qblock {
+  color: #5a5a5a;
+  background: #f0efec; /* editor_app.py "qblock" タグ */
+}
+.cm-esc {
+  background: #f2e6b0; /* editor_app.py "esc" タグ */
+}
+
+/* プレビュー */
+#preview {
+  padding: 16px 20px;
+  line-height: 1.7;
+  font-size: var(--edit-font);
+  font-family: var(--edit-family), "Meiryo UI", Meiryo, sans-serif;
+  overflow-anchor: none; /* 差し替え時に表示位置が勝手にずれるのを止める */
+}
+
+/* 印刷（Ctrl+Shift+P）。プレビュー欄だけを出す。 */
+@media print {
+  #tabs,
+  #toolbar,
+  #statusbar,
+  #editor,
+  #memo {
+    display: none !important;
+  }
+  #split {
+    display: block;
+  }
+  #preview {
+    overflow: visible;
+    width: 100%;
+    border: none;
+  }
+}
+#preview h1 {
+  font-size: 1.65em;
+}
+#preview h2 {
+  font-size: 1.36em;
+}
+#preview h3 {
+  font-size: 1.18em;
+}
+#preview h4 {
+  font-size: 1.09em;
+}
+#preview h5,
+#preview h6 {
+  font-size: 1em;
+}
+#preview u.uu {
+  text-decoration: none;
+  border-bottom: 3px double currentColor;
+}
+#preview blockquote {
+  margin: 0.6em 0;
+  padding-left: 12px;
+  border-left: 3px solid #c4c0b8;
+  color: #5a5a5a;
+}
+#preview code {
+  background: #eceae5;
+  padding: 0 2px;
+  border-radius: 2px;
+}
+#preview pre {
+  background: #f0eee9;
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+#preview pre code {
+  background: none;
+  padding: 0;
+}
+#preview table {
+  border-collapse: collapse;
+  margin: 0.6em 0;
+}
+#preview th,
+#preview td {
+  border: 1px solid #c4c0b8;
+  padding: 3px 8px;
+}
+#preview hr {
+  border: none;
+  border-top: 1px solid #c4c0b8;
+}

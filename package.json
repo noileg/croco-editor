@@ -1,0 +1,28 @@
+{
+  "name": "croco-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "croco-editor — Windows 用 Markdown 下書きエディタ。C#（WinForms）＋ WebView2 の殻に CodeMirror 6 + markdown-it のフロントを載せている。",
+  "type": "module",
+  "repository": { "type": "git", "url": "https://github.com/noileg/croco-editor.git" },
+  "scripts": {
+    "build": "node build.mjs",
+    "build:host": "node csharp/build_host.mjs",
+    "check": "node test/check.mjs",
+    "test": "node test/check.mjs && node test/tags.check.mjs && node test/fmt.check.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "jsdom": "^30.0.1"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.0.0",
+    "@codemirror/lang-markdown": "^6.0.0",
+    "@codemirror/language": "^6.0.0",
+    "@codemirror/search": "^6.0.0",
+    "@codemirror/state": "^6.0.0",
+    "@codemirror/view": "^6.0.0",
+    "fflate": "^0.8.3",
+    "markdown-it": "^14.0.0"
+  }
+}

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>croco-editor</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="tabs"></div>
+    <div id="toolbar">
+      <label>上限 <input type="number" id="limit" value="0" min="0" step="100" /> 字</label>
+      <span id="presets"></span>
+      <label><input type="checkbox" id="ws" checked /> 空白も数える</label>
+      <label><input type="checkbox" id="strip" /> 記法を数えない</label>
+    </div>
+    <div id="split">
+      <div id="editor"></div>
+      <div id="gutter1" class="gutter"></div>
+      <div id="preview"></div>
+      <div id="memo" class="hidden"></div>
+    </div>
+    <div id="statusbar">
+      <span id="count">0 字</span>
+      <span id="pos">1 行 1 列</span>
+      <span id="pt">11 pt</span>
+      <span id="path"></span>
+    </div>
+    <script src="bundle.js"></script>
+  </body>
+</html>

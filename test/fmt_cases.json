@@ -1,0 +1,21 @@
+[
+  {"name": "plain", "md": "普通の段落です。二文目もあります。"},
+  {"name": "heading", "md": "# 大見出し\n\n## 中見出し\n\n本文。"},
+  {"name": "emphasis", "md": "これは**太字**と*斜体*と~~打ち消し~~と`コード`。"},
+  {"name": "underline", "md": "AIを<u>使った箇所</u>には下線を引く。"},
+  {"name": "underline-double", "md": "ここは<uu>二重下線</uu>のところ。"},
+  {"name": "underline-across-para", "md": "<u>一段落目の下線が\n\n二段落目まで続く</u>場合。"},
+  {"name": "list-ul", "md": "- 箇条書き一\n- 箇条書き二\n  - 入れ子"},
+  {"name": "list-ol", "md": "1. 番号付き一\n2. 番号付き二"},
+  {"name": "list-underline", "md": "<u>下線が箇条書きをまたぐ\n- 項目A\n- 項目B\nまで</u>続く。"},
+  {"name": "quote", "md": "> 引用の一行目\n> 引用の二行目"},
+  {"name": "table", "md": "| 見出しA | 見出しB |\n|---|---|\n| あ | い |\n| うう | ええ |"},
+  {"name": "link", "md": "詳しくは[こちら](https://example.com/page)を参照。"},
+  {"name": "codeblock", "md": "前文\n\n```\ndef f():\n    return 1\n```\n\n後文"},
+  {"name": "hr", "md": "上の段落。\n\n---\n\n下の段落。"},
+  {"name": "mixed", "md": "# タイトル\n\n本文で**要点**と<u>下線</u>を述べる。\n\n- 箇条書き\n- <u>下線つき項目</u>\n\n> 引用文\n\n| A | B |\n|---|---|\n| 1 | 2 |"},
+  {"name": "ublock", "md": "前の段落。\n\n<ublock>\nここから\n複数行の\n下線ブロック\n</ublock>\n\n後の段落。"},
+  {"name": "qblock", "md": "前段。\n\n<qblock>\n引用ブロック一行目\n\n空行を挟んだ二段落目\n</qblock>\n\n後段。"},
+  {"name": "esc", "md": "本文の一行目。\n\n<esc>\nこれは参考資料。\n提出物ではない。\n</esc>\n\n本文の続き。"},
+  {"name": "esc-inline", "md": "見せる文<esc>隠す資料</esc>また見せる文。"}
+]

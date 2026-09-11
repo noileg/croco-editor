@@ -1,0 +1,15 @@
+[
+  {"name": "u-wrap", "op": "u", "text": "これはテスト文です", "start": 2, "end": 5},
+  {"name": "u-unwrap-inner", "op": "u", "text": "aa<u>bbbb</u>cc", "start": 2, "end": 12},
+  {"name": "u-unwrap-outer", "op": "u", "text": "aa<u>bbbb</u>cc", "start": 5, "end": 9},
+  {"name": "u-empty-at-caret", "op": "u", "text": "abcdef", "start": 3, "end": 3},
+  {"name": "uu-wrap", "op": "uu", "text": "二重下線のテスト", "start": 0, "end": 4},
+  {"name": "uu-unwrap-outer", "op": "uu", "text": "x<uu>yyy</uu>z", "start": 5, "end": 8},
+  {"name": "esc-wrap", "op": "esc", "text": "本文と参考資料", "start": 3, "end": 7},
+  {"name": "esc-unwrap-inner", "op": "esc", "text": "p<esc>note</esc>q", "start": 1, "end": 16},
+  {"name": "bulk-fulltext", "op": "bulk", "text": "普通の文\n<u>もう引いてある</u>\nまだの文", "start": 0, "end": 0},
+  {"name": "bulk-selection", "op": "bulk", "text": "AAA BBB <u>CCC</u> DDD", "start": 0, "end": 22},
+  {"name": "bulk-skip-esc", "op": "bulk", "text": "見せる<esc>隠す資料</esc>見せる2", "start": 0, "end": 0},
+  {"name": "bulk-whitespace-only", "op": "bulk", "text": "語1   \n   語2", "start": 0, "end": 0},
+  {"name": "bulk-nothing-to-do", "op": "bulk", "text": "<u>全部下線</u>", "start": 0, "end": 0}
+]
