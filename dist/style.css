@@ -117,6 +117,14 @@ body {
   font-family: var(--edit-family), "Meiryo UI", Meiryo, sans-serif;
   background: #fbfaf8;
   overflow-anchor: none;
+  overflow-wrap: break-word; /* 長い一続きの文字列でパネルごと横に伸びるのを防ぐ */
+}
+#memo pre {
+  overflow-x: auto; /* コードブロックだけ横スクロール、パネル全体は伸ばさない */
+}
+#memo table {
+  display: block;
+  overflow-x: auto; /* 表だけ横スクロール */
 }
 #memo.none {
   color: #999;

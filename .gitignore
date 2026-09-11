@@ -1,6 +1,7 @@
 # 依存とビルド出力
 node_modules/
 csharp/out/
+dist-installer/
 
 # esbuild のソースマップ（build.mjs が再生成。bundle.js 本体はコミットする）
 dist/*.map
