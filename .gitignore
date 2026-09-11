@@ -1,7 +1,7 @@
 # 依存とビルド出力
 node_modules/
 csharp/out/
-dist-installer/
+# dist-installer/ は無視しない。インストーラの exe をリポジトリに直接コミットして配る運用のため
 
 # esbuild のソースマップ（build.mjs が再生成。bundle.js 本体はコミットする）
 dist/*.map
