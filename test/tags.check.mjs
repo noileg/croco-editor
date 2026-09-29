@@ -1,5 +1,5 @@
-// tags.js（<u>/<uu>/<esc> トグルと一括下線）が docformats の対応関数と
-// 一致するか。node test/tags.check.mjs
+// Whether tags.js (<u>/<uu>/<esc> toggles and bulk underline) matches the Python
+// reference. node test/tags.check.mjs
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -19,8 +19,8 @@ const py = spawnSync("python", [join(here, "tags_ref.py")], {
   env: { ...process.env, PYTHONUTF8: "1" },
 });
 if (py.status !== 0 || !py.stdout.trim()) {
-  // 参照実装（旧 Python 版）が無い環境。CROCO_PYREF を設定すると照合できる。
-  console.log("SKIP: CROCO_PYREF 未設定（旧 Python 版との照合を省略）");
+  // No reference implementation here. Set CROCO_PYREF to compare.
+  console.log("SKIP: CROCO_PYREF not set (comparison with the Python reference skipped)");
   process.exit(0);
 }
 const ref = JSON.parse(py.stdout);
@@ -36,5 +36,5 @@ for (let i = 0; i < cases.length; i++) {
     console.error(`  js: ${JSON.stringify(b)}`);
   }
 }
-console.log(failed === 0 ? `OK 全 ${cases.length} ケース一致` : `NG ${failed}/${cases.length} 不一致`);
+console.log(failed === 0 ? `OK all ${cases.length} cases match` : `NG ${failed}/${cases.length} differ`);
 process.exit(failed === 0 ? 0 : 1);

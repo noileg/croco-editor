@@ -1,35 +1,37 @@
-// C# 殻（WebView2 ホスト）とのやりとり。素の文字列プロトコル（JSON 依存なし）。
-// フィールド区切りは "\n"。本文は必ず最後の1フィールドに置き、そこだけ改行を含む。
+// Messaging with the C# shell (the WebView2 host). A plain string protocol (no JSON).
+// Fields are separated by "\n". The text body is always the last field and is the
+// only one that may contain newlines.
 //
-//   殻 → JS :
-//     load\n<パス>\n<crlf>\n<本文>        起動時の最初のタブ（パス空 = 新規）
-//     opened\n<パス>\n<crlf>\n<本文>      「開く」で読み込んだファイル → 新しいタブ
-//     saved\n<reqId>\n<パス>              保存完了（パスは最終的な保存先）
-//     conflict\n<reqId>\n<パス>           保留を選んだ（外部でも変更あり。この
-//                                          タブの自動保存を止める。以後の保存で再度選択肢）
-//     reloaded\n<reqId>\n<crlf>\n<本文>   外部の内容を読み込む」を選んだ。
-//                                          このタブを書かずに差し替える
-//     externalUpdate\n<パス>\n<crlf>\n<本文>
-//       アクティブなタブが未編集のまま外部でファイルが変わったのを殻が
-//       ポーリングで検知（memo-watch の draft パスを見張る、1秒間隔）。
-//       保存要求は絡まない一方的な通知。該当タブが今も未編集ならその場で
-//       差し替える（editor_app.py _autosave_files の「dirtyでなければ黙って
-//       読み直す」半分。保存前の競合確認とは別物）
-//     flushSave                            閉じる前に本文つき save を返せ
-//     menu\n<cmd>                          メニュー項目が押された
-//   JS → 殻 :
-//     open                                「開く」ダイアログを出して読んで
-//     save\n<reqId>\n<crlf>\n<パス>\n<本文>
-//       上書き保存（パス空 → ダイアログ）。外部変更を検知したら、自動保存
-//       （idle timer）・明示保存（Ctrl+S 等）を問わずその場で MessageBox を出し
-//       上書き／外部を読み込む／保留 を選ばせる（VS Code の比較/上書き相当）
-//     saveas\n<reqId>\n<crlf>\n<パス>\n<本文>
-//       名前を付けて保存（必ずダイアログ）
-//     title\n<名前>\n<0|1>                ウィンドウタイトル（名前, 未保存か）
-//     wrap\n<0|1> / preview\n<0|1> / editor\n<0|1>  メニューのチェックを合わせる
-//     host\n<cmd>                          殻の機能を呼ぶ（new-window 等）
-//     docbase\n<フォルダ>                  HTML プレビューの相対パス解決先（doc.local）
-//     dirty\n<0|1> / diag\n<文字列>       互換・デバッグ用
+//   shell -> JS:
+//     load\n<path>\n<crlf>\n<text>        First tab at startup (empty path = new)
+//     opened\n<path>\n<crlf>\n<text>      A file opened with Open -> new tab
+//     saved\n<reqId>\n<path>              Save finished (path = final location)
+//     conflict\n<reqId>\n<path>           "Leave it for now" was chosen (changed
+//                                          externally too). Stop autosaving this tab;
+//                                          the next save asks again
+//     reloaded\n<reqId>\n<crlf>\n<text>   "Load the external version" was chosen.
+//                                          Replace this tab's text without writing
+//     externalUpdate\n<path>\n<crlf>\n<text>
+//       The shell's 1-second poll (watching the memo-watch draft path) saw the
+//       active, unedited tab's file change on disk. A one-way notice unrelated to
+//       saving: replace the tab's text if it is still unedited. (Separate from the
+//       conflict check that runs before saving.)
+//     flushSave                            Send back a save with the text before closing
+//     menu\n<cmd>                          A menu item was chosen
+//     lang\n<en|ja>                        The UI language was switched
+//   JS -> shell:
+//     open                                Show the Open dialog and read the file
+//     save\n<reqId>\n<crlf>\n<path>\n<text>
+//       Save (empty path -> dialog). If the file changed externally, whether this
+//       is an autosave or an explicit save, a MessageBox asks: overwrite / load the
+//       external version / leave it for now
+//     saveas\n<reqId>\n<crlf>\n<path>\n<text>
+//       Save as (always shows the dialog)
+//     title\n<name>\n<0|1>                Window title (name, unsaved?)
+//     wrap\n<0|1> / preview\n<0|1> / editor\n<0|1>  Sync the menu check marks
+//     host\n<cmd>                          Run a shell command (new-window etc.)
+//     docbase\n<folder>                    Where the HTML preview resolves relative paths (doc.local)
+//     dirty\n<0|1> / diag\n<text>          Compatibility / debugging
 
 const wv = typeof window !== "undefined" && window.chrome && window.chrome.webview;
 export const inShell = !!wv;
@@ -47,9 +49,10 @@ const handlers = {
   memo: [],
   import: [],
   exportRequest: [],
+  lang: [],
 };
 
-// バイト列 ⇄ base64（殻とのバイナリ受け渡し用）。
+// Bytes <-> base64 (for passing binary data to and from the shell).
 export function b64encode(u8) {
   let s = "";
   for (let i = 0; i < u8.length; i += 0x8000) {
@@ -64,7 +67,7 @@ export function b64decode(str) {
   return u8;
 }
 
-// 先頭 n-1 個を "\n" で割り、残り全部（改行込み）を最後の要素にする。
+// Split on "\n" into n-1 fields plus the rest (newlines included) as the last.
 function splitN(s, n) {
   const parts = [];
   let rest = s;
@@ -125,6 +128,8 @@ if (wv) {
     } else if (head === "export-request") {
       const [path, ext] = splitN(body, 2);
       handlers.exportRequest.forEach((cb) => cb({ path, ext }));
+    } else if (head === "lang") {
+      handlers.lang.forEach((cb) => cb(body.trim()));
     }
   });
 }
@@ -141,13 +146,14 @@ export const onRestore = (cb) => handlers.restore.push(cb);
 export const onMemo = (cb) => handlers.memo.push(cb);
 export const onImport = (cb) => handlers.import.push(cb);
 export const onExportRequest = (cb) => handlers.exportRequest.push(cb);
+export const onLang = (cb) => handlers.lang.push(cb);
 export function sendExportBytes(path, u8) {
   if (wv) wv.postMessage("export-bytes\n" + path + "\n" + b64encode(u8));
 }
 
-// メモ広場：見張る対象と表示状態を殻に伝える／編集内容を書き戻す。
-// dirty も一緒に伝える——アクティブなタブの下書きが外部でも変わったとき、
-// 未編集なら殻が黙って読み直して externalUpdate で返す（下参照）ための判定に使う。
+// Notes panel: tell the shell what to watch and whether it is shown; write edits back.
+// The dirty flag goes along too: when the active tab's draft changes on disk and the
+// tab is unedited, the shell reloads it silently and replies with externalUpdate.
 export function memoWatch(draftPath, overridePath, visible, editable, dirty) {
   if (wv) {
     wv.postMessage(
@@ -167,8 +173,8 @@ export function setMemoMenu(visible, editable) {
   }
 }
 
-// セッション状態（開いているタブの一覧など）を殻に預ける。殻はこれを
-// session.dat に書き、次回起動時に restore で返す。
+// Hand the session state (open tabs etc.) to the shell. It writes it to
+// session.dat and returns it with restore at the next launch.
 export function setSession(obj) {
   if (wv) wv.postMessage("session\n" + JSON.stringify(obj));
 }
@@ -198,15 +204,15 @@ export function setEditor(on) {
 export function setPreview(on) {
   if (wv) wv.postMessage("preview\n" + (on ? "1" : "0"));
 }
-// HTML タブのプレビューが相対パスの画像・CSS を読めるよう、殻の仮想ホスト
-// doc.local をそのHTMLのフォルダへ向けてもらう（空なら解除）。
+// Ask the shell to point its virtual host doc.local at the HTML file's folder, so
+// the HTML preview can load relative images and CSS (empty removes the mapping).
 export function setDocBase(folder) {
   if (wv) wv.postMessage("docbase\n" + (folder || ""));
 }
 export function menuToHost(cmd) {
   if (wv) wv.postMessage("host\n" + cmd);
 }
-// 未保存タブを閉じる確認（殻の MessageBox。現行の はい/いいえ/キャンセル）。
+// Confirm closing an unsaved tab (a Yes/No/Cancel MessageBox in the shell).
 export function askCloseTab(id, name) {
   if (wv) wv.postMessage("host\nask-close\n" + id + "\n" + name);
 }

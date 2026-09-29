@@ -1,7 +1,7 @@
-// 字数カウントの移植が Python 参照実装と一致しているかを確かめる回帰テスト。
+// Regression test: character counting matches the Python reference implementation.
 //   node check.mjs
-// ref_python.py を実行して現行 editor_app.analyze の結果を取り、JS 版と突き合わせる。
-// Python が実行できない環境では、コミット済みの py_out.json（ゴールデン）と比較する。
+// Runs ref_python.py to get the reference results and compares them with the JS version.
+// Where Python can't run, compares with the committed py_out.json (golden) instead.
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -26,7 +26,7 @@ if (py.status === 0 && py.stdout.trim()) {
   refSource = "live: editor_app.analyze";
 } else {
   ref = JSON.parse(readFileSync(join(here, "py_out.json"), "utf-8"));
-  refSource = "golden: py_out.json (Python 実行不可)";
+  refSource = "golden: py_out.json (Python not available)";
 }
 
 let failed = 0;
@@ -40,6 +40,6 @@ for (let i = 0; i < cases.length; i++) {
     );
   }
 }
-console.log(`参照 = ${refSource}`);
-console.log(failed === 0 ? `OK 全 ${cases.length} ケース一致` : `NG ${failed}/${cases.length} ケース不一致`);
+console.log(`reference = ${refSource}`);
+console.log(failed === 0 ? `OK all ${cases.length} cases match` : `NG ${failed}/${cases.length} cases differ`);
 process.exit(failed === 0 ? 0 : 1);

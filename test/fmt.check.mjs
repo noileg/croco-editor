@@ -1,7 +1,7 @@
-// docformats.js（docx/html 変換）が docformats.py と一致するか。
+// Whether docformats.js (docx/html conversion) matches the Python reference.
 //   node test/fmt.check.mjs
-// Python 参照（fmt_ref.py）と突き合わせる。Node には DOMParser が無いので
-// jsdom で差し込む。
+// Compares with the Python reference (fmt_ref.py). Node has no DOMParser, so jsdom
+// provides one.
 import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -19,6 +19,9 @@ const {
   markdownToDocx,
   docxToMarkdown,
 } = await import("../src/docformats.js");
+// The Python reference produces Japanese placeholders and titles.
+const { setLang } = await import("../src/i18n.js");
+setLang("ja");
 
 const py = spawnSync("python", [join(here, "fmt_ref.py")], {
   encoding: "utf-8",
@@ -26,7 +29,7 @@ const py = spawnSync("python", [join(here, "fmt_ref.py")], {
   maxBuffer: 32 * 1024 * 1024,
 });
 if (py.status !== 0 || !py.stdout.trim()) {
-  console.log("SKIP: CROCO_PYREF 未設定（旧 Python 版との照合を省略）");
+  console.log("SKIP: CROCO_PYREF not set (comparison with the Python reference skipped)");
   process.exit(0);
 }
 const ref = JSON.parse(py.stdout);
@@ -45,7 +48,7 @@ for (let i = 0; i < cases.length; i++) {
   const jsHtmlRt = htmlToMarkdown(jsHtml);
   const jsDocxBytes = markdownToDocx(c.md);
   const jsDocxRt = docxToMarkdown(jsDocxBytes);
-  // JS が作った docx を Python の reader が読み戻せるか（＝Word 可読の代理）
+  // Can the Python reader read back the docx made by JS? (a stand-in for "Word can open it")
   const pyReadsJsDocx = spawnSync(
     "python",
     ["-c", "import sys,docformats; sys.stdout.buffer.write(docformats.docx_to_markdown(sys.stdin.buffer.read()).encode('utf-8'))"],
@@ -70,10 +73,10 @@ for (let i = 0; i < cases.length; i++) {
   if (bad) failed++;
 }
 
-console.log(failed === 0 ? `OK 全 ${cases.length} ケース一致` : `NG ${failed}/${cases.length} 不一致`);
+console.log(failed === 0 ? `OK all ${cases.length} cases match` : `NG ${failed}/${cases.length} differ`);
 process.exit(failed === 0 ? 0 : 1);
 
-// jsDocx から word/document.xml を取り出す（fflate）
+// Extract word/document.xml from the docx bytes (fflate)
 import { unzipSync } from "fflate";
 function extractDocXml(bytes) {
   return unzipSync(bytes)["word/document.xml"];

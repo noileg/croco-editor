@@ -1,16 +1,14 @@
-// 字数カウント。editor_app.py の build_mask / mark_markdown_syntax / analyze と
-// docformats.py の esc 処理からの逐語移植。ここが変わると道具の意味が変わるので、
-// 書き直しではなく移植であることを守る（Python 版 docstring より）。
+// Character counting: which characters count toward the total, and where the
+// text starts to exceed the limit.
 //
-// 移植上の注意（Python との差）:
-//  - Python の len / インデックスはコードポイント単位。JS の string.length は
-//    UTF-16 単位なので、BMP 外（絵文字など）で 1 文字が 2 に数えられてずれる。
-//    下書き書類に絵文字はまず入らないが、完全一致にするなら Array.from で
-//    コードポイント配列に直して数える必要がある。TODO として残す。
-//  - JS の \s と Python の str.isspace() は概ね一致するが完全同一ではない
-//    （Python は \x1c-\x1f 等も空白扱い）。実害の出る文字はまず現れない。
+// Known gaps:
+//  - string.length counts UTF-16 units, so characters outside the BMP (emoji etc.)
+//    count as 2. Drafts rarely contain them; counting code points (Array.from)
+//    would fix it. TODO.
+//  - JS's \s is close to, but not exactly, "whitespace" in every sense (e.g.
+//    \x1c-\x1f are not matched). Such characters practically never appear.
 
-// --- 記法の判定（editor_app.py 72-88 行からの移植） -----------------------
+// --- Markup detection ---------------------------------------------------------
 const RE_HR = /^\s*([-*_])\s*(?:\1\s*){2,}$/;
 const RE_FENCE = /^\s*(```|~~~)/;
 const RE_HEAD_PREFIX = /^(\s*#{1,6}\s+)/;
@@ -18,19 +16,18 @@ const RE_QUOTE_PREFIX = /^(\s*>\s?)/;
 const RE_LIST_PREFIX = /^(\s*(?:[-*+]|\d+[.)])\s+)/;
 const RE_TABLE_ROW = /^\s*\|.*\|\s*$/;
 const RE_TABLE_SEP = /^\s*\|[\s|:-]+\|\s*$/;
-// (!?)[表示]( URL )
+// (!?)[text]( URL )
 const RE_LINK = /(!?)\[([^\]\n]*)\]\(([^)\n]*)\)/g;
 
-// 下線・エスケープのタグ。<ublock> と <u> は別物として扱う（\s*> の直前が
-// "u" なので "block>" には一致しない）。
+// Underline and escape tags. <ublock> is distinct from <u> (the character before
+// \s*> must be "u", so "block>" doesn't match).
 const RE_U_TAG = /<\/?u\s*>/gi;
 const RE_UU_TAG = /<\/?uu\s*>/gi;
 const RE_UBLOCK_TAG = /<\/?ublock\s*>/gi;
 const RE_QBLOCK_TAG = /<\/?qblock\s*>/gi;
 const RE_ESC_TAG = /<\/?esc\s*>/gi;
 
-// 行をまたがない装飾記号（editor_app.py RE_INLINE）。JS の \w は元々 ASCII のみ
-// なので Python 側が明示していた [A-Za-z0-9_] とそのまま対応する。
+// Inline markers that don't span lines. JS's \w is ASCII-only, i.e. [A-Za-z0-9_].
 const RE_INLINE = [
   /\*\*|__/g,
   /~~/g,
@@ -38,8 +35,8 @@ const RE_INLINE = [
   /`/g,
 ];
 
-// プレビューで拾う装飾（editor_app.py RE_INLINE_RENDER）。装飾記号を落として
-// 桁を数えるのに使う。名前付きグループ。
+// Inline decorations as rendered, with named groups. Used to drop the markers and
+// count what is visible.
 const RE_INLINE_RENDER = new RegExp(
   "<uu\\s*>(?<under2>[\\s\\S]*?)<\\/uu\\s*>" +
   "|<u\\s*>(?<under>[\\s\\S]*?)<\\/u\\s*>" +
@@ -51,7 +48,7 @@ const RE_INLINE_RENDER = new RegExp(
 );
 const DISPLAY_GROUPS = ["under", "under2", "strong", "strong2", "strike", "code", "em", "label"];
 
-// --- docformats.py: <esc>…</esc> の外側スパン ----------------------------
+// --- Outer spans of <esc>...</esc> --------------------------------------------
 export function escSpans(text) {
   const spans = [];
   let start = null;
@@ -68,7 +65,7 @@ export function escSpans(text) {
       start = m.index;
     }
   }
-  // 閉じ忘れは本文末尾までとみなす（書いている途中は必ずこの状態を通る）。
+  // An unclosed tag runs to the end of the text (always the case while typing).
   if (start !== null) spans.push([start, text.length]);
   return spans;
 }
@@ -82,7 +79,7 @@ export function stripEsc(text) {
   return out;
 }
 
-// --- 装飾記号を落として実際に見える文字だけにする（strip_decoration） -----
+// --- Drop decoration markers, leaving only the visible characters ---------------
 export function stripDecoration(text) {
   text = stripEsc(text);
   for (let i = 0; i < 4; i++) {
@@ -99,7 +96,7 @@ export function stripDecoration(text) {
   return text;
 }
 
-// --- mark_markdown_syntax（記法として使われている文字に「数えない」印） ----
+// --- Mark characters used as markup as "not counted" ---------------------------
 function markMarkdownSyntax(text, mask) {
   const clear = (start, end) => {
     for (let i = Math.max(0, start); i < Math.min(end, mask.length); i++) mask[i] = 0;
@@ -147,7 +144,7 @@ function markMarkdownSyntax(text, mask) {
     }
   }
 
-  // [表示](URL) は表示文字だけ数える。画像 ![..](..) は丸ごと落とす。
+  // Links [text](URL) count only the text. Images ![..](..) are dropped entirely.
   RE_LINK.lastIndex = 0;
   let m;
   while ((m = RE_LINK.exec(text)) !== null) {
@@ -156,9 +153,9 @@ function markMarkdownSyntax(text, mask) {
       clear(m.index, m.index + whole.length);
       continue;
     }
-    clear(m.index, m.index + 1); // 先頭の [
-    const close = m.index + 1 + m[2].length; // ] の位置
-    clear(close, m.index + whole.length); // ](URL) の部分
+    clear(m.index, m.index + 1); // the leading [
+    const close = m.index + 1 + m[2].length; // position of ]
+    clear(close, m.index + whole.length); // the ](URL) part
   }
 }
 
@@ -174,13 +171,13 @@ export function buildMask(text, stripMarkdown, includeWhitespace) {
       if (m[0].length === 0) re.lastIndex++;
     }
   };
-  // <u> / <uu> / <ublock> / <qblock> のタグ自体は設定に関わらず常に数えない。
-  // （提出物には下線や引用として現れる印であって本文ではない）
+  // <u> / <uu> / <ublock> / <qblock> tags never count, whatever the settings (they
+  // show up as underlines or quotes in the final document, not as text).
   clearTag(RE_U_TAG);
   clearTag(RE_UU_TAG);
   clearTag(RE_UBLOCK_TAG);
   clearTag(RE_QBLOCK_TAG);
-  // <esc>…</esc> はタグも中身も常に数えない。
+  // <esc>...</esc> never counts, tags and contents alike.
   for (const [s, e] of escSpans(text)) {
     for (let i = s; i < Math.min(e, mask.length); i++) mask[i] = 0;
   }
@@ -193,7 +190,7 @@ export function buildMask(text, stripMarkdown, includeWhitespace) {
   return mask;
 }
 
-// --- analyze: (数えた文字数, 上限を超え始める位置) ----------------------
+// --- analyze: (characters counted, position where the limit is exceeded) ------
 export function analyze(text, limit, stripMarkdown, includeWhitespace) {
   const mask = buildMask(text, stripMarkdown, includeWhitespace);
   let total = 0;

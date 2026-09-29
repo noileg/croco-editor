@@ -1,12 +1,12 @@
-// Markdown ⇄ .docx / .html。下線（<u>/<uu>）を保ったまま持ち運ぶ変換層。
-// 現行 docformats.py からの移植。役割・注意点は docformats.py 冒頭を参照。
-//   取り込み： docxToMarkdown(Uint8Array) / htmlToMarkdown(string) / htmlFromZip(Uint8Array)
-//   書き出し： markdownToDocx(string) -> Uint8Array / markdownToHtml(string, title) -> string
-//   入口：    isImportOnly(ext) / readMarkdown(ext, Uint8Array) / toBytes(ext, text, crlf)
+// Markdown <-> .docx / .html, keeping underlines (<u>/<uu>) intact.
+//   Import:  docxToMarkdown(Uint8Array) / htmlToMarkdown(string) / htmlFromZip(Uint8Array)
+//   Export:  markdownToDocx(string) -> Uint8Array / markdownToHtml(string, title) -> string
+//   Entry:   isImportOnly(ext) / readMarkdown(ext, Uint8Array) / toBytes(ext, text, crlf)
 import { zipSync, unzipSync } from "fflate";
+import { tr } from "./i18n.js";
 
 // =====================================================================
-// 記法の正規表現（docformats.py と同じ）
+// Markup regular expressions
 // =====================================================================
 const RE_BAD_XML = /[\x00-\x08\x0b\x0c\x0e-\x1f]/g;
 const RE_U_TAG = /<\/?u\s*>/gi;
@@ -29,11 +29,11 @@ const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 
 const DOCX_EXT = [".docx"];
-// .html/.htm はエディタ本体がそのまま開く（取り込みは zip の中の .html だけ）。
+// .html/.htm are opened as-is by the editor; only .html inside a zip is imported.
 const HTML_EXT = [".zip"];
 
 // =====================================================================
-// 小さいヘルパ
+// Small helpers
 // =====================================================================
 function esc(text) {
   return text
@@ -60,7 +60,7 @@ function decodeBytes(bytes) {
   }
 }
 
-// --- <esc>…</esc>（外側スパン。閉じ忘れは末尾まで） -------------------
+// --- <esc>...</esc> (outer spans; an unclosed tag runs to the end) ---------------
 function escSpans(text) {
   const spans = [];
   let start = null;
@@ -86,7 +86,7 @@ export function stripEsc(text) {
   return out;
 }
 
-// --- <ublock>/<qblock> の展開（docformats.py と同じ規則。行数は変えない）
+// --- Expanding <ublock>/<qblock> (line count unchanged) ---------------------------
 function expandUblock(text) {
   return text.replace(/<ublock\s*>/gi, "<u>").replace(/<\/ublock\s*>/gi, "</u>");
 }
@@ -108,7 +108,7 @@ function codeSpanMask(text) {
   }
   return mask;
 }
-// underline_spans / underline_double_spans（中身の範囲。インラインコード内は無視）
+// Underline / double-underline spans (the contents; tags inside inline code are ignored)
 function pairSpans(text, re) {
   const spans = [];
   const inCode = codeSpanMask(text);
@@ -131,7 +131,7 @@ const underlineSpans = (t) => pairSpans(t, RE_U_TAG);
 const underlineDoubleSpans = (t) => pairSpans(t, RE_UU_TAG);
 
 // =====================================================================
-// 段落／リストをまたぐ下線の繋ぎ直し
+// Re-joining underlines that span paragraphs or list items
 // =====================================================================
 function maskFromSpans(len, spans) {
   const mask = new Uint8Array(len);
@@ -230,7 +230,7 @@ function carryUnderlineAcrossListItems(text) {
   return out.join("");
 }
 
-// 行ごとに (元の行, 行頭の下線タグ, タグを除いた本体)
+// Per line: (original line, leading underline tag, body without the tag)
 function splitLeadingDecor(line) {
   const m = RE_LEADING_DECOR.exec(line);
   if (!m) return ["", line];
@@ -257,7 +257,7 @@ function decorLines(text) {
 }
 
 // =====================================================================
-// インライン装飾のトークナイザ（parse_inline）
+// Tokenizer for inline decorations
 // =====================================================================
 const RE_INLINE_TOKEN = new RegExp(
   "(?<uuopen><uu\\s*>)|(?<uuclose><\\/uu\\s*>)" +
@@ -292,7 +292,7 @@ export function parseInline(text) {
     else if (g.code) segs.push([m[0].slice(1, -1), { ...state, code: true }]);
     else if (g.image) {
       const p = RE_LINK_PARTS.exec(m[0]);
-      if (p && p[1]) segs.push([`[画像: ${p[1]}]`, { ...state }]);
+      if (p && p[1]) segs.push([tr(`[image: ${p[1]}]`, `[画像: ${p[1]}]`), { ...state }]);
     } else if (g.link) {
       const p = RE_LINK_PARTS.exec(m[0]);
       if (p) segs.push([p[1] || p[2], { ...state, link: p[2] }]);
@@ -303,7 +303,7 @@ export function parseInline(text) {
 }
 
 // =====================================================================
-// 装飾つき文字列 → Markdown（docx/html の取り込みで使う）
+// Decorated segments -> Markdown (used when importing docx/html)
 // =====================================================================
 function wrap(text, marks) {
   if (!marks.length) return text;
@@ -364,7 +364,7 @@ function joinBlocks(blocks) {
 }
 
 // =====================================================================
-// .html を読む（_HtmlReader を DOM 走査で再現）
+// --- Reading .html (walks the DOM) ---
 // =====================================================================
 const RE_CSS_RULE = /([^{}]+)\{([^{}]*)\}/g;
 function parseCss(source) {
@@ -565,7 +565,7 @@ class HtmlReader {
 export function htmlToMarkdown(source) {
   const doc = new DOMParser().parseFromString(source, "text/html");
   const reader = new HtmlReader();
-  // <style> を先に集める（Docs のクラス指定下線）
+  // Collect <style> first (Google Docs underlines via class names)
   for (const st of doc.querySelectorAll("style")) reader.css = { ...reader.css, ...parseCss(st.textContent || "") };
   const SKIP = new Set(["script", "noscript", "title", "style"]);
   const walk = (node) => {
@@ -590,16 +590,16 @@ export function htmlToMarkdown(source) {
 export function htmlFromZip(bytes) {
   const files = unzipSync(bytes);
   const names = Object.keys(files).filter((n) => /\.html?$/i.test(n));
-  if (!names.length) throw new Error("zip の中に .html がありません");
+  if (!names.length) throw new Error(tr("The zip contains no .html file", "zip の中に .html がありません"));
   names.sort((a, b) => a.length - b.length);
   return decodeBytes(files[names[0]]);
 }
 
 // =====================================================================
-// .docx を読む
+// --- Reading .docx ---
 // =====================================================================
 function wq(tag) {
-  return tag; // 名前空間は localName で見る（下の findChildren がやる）
+  return tag; // Namespaces are handled via localName (see findChildren below)
 }
 function children(node, localName) {
   const out = [];
@@ -690,6 +690,7 @@ function headingLevel(style, ppr) {
   const flat = style.replace(/ /g, "").replace(/　/g, "").toLowerCase();
   if (flat.startsWith("subtitle")) return 2;
   if (flat.startsWith("title")) return 1;
+  // Heading styles: "heading N", or "見出し N" in documents made with Japanese Word
   const f = /^(?:heading|見出し)(\d)$/.exec(flat);
   if (f) return Math.min(6, Number(f[1]));
   if (ppr) {
@@ -802,7 +803,7 @@ export function docxToMarkdown(bytes) {
 }
 
 // =====================================================================
-// .html を書く
+// --- Writing .html ---
 // =====================================================================
 const HTML_STYLE = `
 body { font-family: "Yu Mincho", "游明朝", "MS Mincho", serif;
@@ -947,9 +948,9 @@ export function markdownToHtml(text, title = "") {
     out.push("<p>" + inlineHtml(block.join("\n")) + "</p>");
   }
   if (openList) out.push(`</${openList}>`);
-  const heading = htmlEscape(title || "文書");
+  const heading = htmlEscape(title || tr("Document", "文書"));
   return (
-    '<!DOCTYPE html>\n<html lang="ja">\n<head>\n<meta charset="utf-8">\n' +
+    `<!DOCTYPE html>\n<html lang="${tr("en", "ja")}">\n<head>\n<meta charset="utf-8">\n` +
     `<title>${heading}</title>\n<style>${HTML_STYLE}</style>\n</head>\n<body>\n` +
     out.join("\n") +
     "\n</body>\n</html>\n"
@@ -957,7 +958,7 @@ export function markdownToHtml(text, title = "") {
 }
 
 // =====================================================================
-// .docx を書く
+// --- Writing .docx ---
 // =====================================================================
 function runXml(text, style) {
   const props = [];
@@ -1249,7 +1250,7 @@ export function markdownToDocx(text) {
 }
 
 // =====================================================================
-// 入口
+// Entry points
 // =====================================================================
 export function isImportOnly(ext) {
   ext = ext.toLowerCase();

@@ -1,8 +1,7 @@
-// 選択範囲の <u>/<uu>/<esc> トグルと一括下線。docformats.py の _toggle_pair /
-// toggle_underline / toggle_underline_double / toggle_esc / bulk_underline /
-// underline_spans / underline_double_spans / esc_spans / _code_span_mask を移植。
-// いずれも (本文, 選択開始, 選択終了) を受け、(新しい本文, 新しい開始, 新しい終了)
-// を返す。呼び出し側は本文を丸ごと差し替えて選択を貼り直す（現行と同じやり方）。
+// Toggling <u>/<uu>/<esc> on the selection, and bulk underlining.
+// Each takes (text, selection start, selection end) and returns
+// (new text, new start, new end). The caller replaces the whole text and then
+// restores the selection.
 
 const RE_U_TAG = /<\/?u\s*>/gi;
 const RE_UU_TAG = /<\/?uu\s*>/gi;
@@ -11,7 +10,7 @@ const RE_UBLOCK_TAG = /<\/?ublock\s*>/gi;
 const RE_QBLOCK_TAG = /<\/?qblock\s*>/gi;
 const RE_INLINE_CODE = /`[^`\n]+`/g;
 
-// docformats._code_span_mask: インラインコード `…` が占める位置を 1 に。
+// Mark the positions covered by inline code `...` with 1.
 function codeSpanMask(text) {
   const mask = new Uint8Array(text.length);
   RE_INLINE_CODE.lastIndex = 0;
@@ -22,8 +21,8 @@ function codeSpanMask(text) {
   return mask;
 }
 
-// docformats.underline_spans / underline_double_spans（中身の範囲。閉じ忘れは
-// 末尾まで。インラインコード内のタグは無視）。
+// Underline / double-underline spans (the contents; an unclosed tag runs to the end;
+// tags inside inline code are ignored).
 function pairSpans(text, re, ignoreCode) {
   const spans = [];
   const inCode = ignoreCode ? codeSpanMask(text) : null;
@@ -47,14 +46,14 @@ function pairSpans(text, re, ignoreCode) {
 }
 
 // docformats.underline_spans / underline_double_spans / ublock_spans /
-// qblock_spans。エディタ本文中で「ここは装飾範囲」と分かるように、
-// 保存・書き出しと同じ規則でライブ表示するのに使う（editor_app.py _update_status）。
+// qblock spans. Used to show the decorated ranges live in the editor, following the
+// same rules as saving and exporting.
 export const underlineSpans = (text) => pairSpans(text, RE_U_TAG, true);
 export const underlineDoubleSpans = (text) => pairSpans(text, RE_UU_TAG, true);
 export const ublockSpans = (text) => pairSpans(text, RE_UBLOCK_TAG, false);
 export const qblockSpans = (text) => pairSpans(text, RE_QBLOCK_TAG, false);
 
-// docformats.esc_spans（タグごと外側の範囲。閉じ忘れは末尾まで）。
+// esc spans (outer range including the tags; an unclosed tag runs to the end).
 export function escSpans(text) {
   const spans = [];
   let start = null;

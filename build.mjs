@@ -1,8 +1,8 @@
-// webview 側のフロントを1ファイルにバンドルする。esbuild。
+// Bundles the webview front end into one file with esbuild.
 //   node build.mjs
-// 出力は dist/（bundle.js ＋ index.html ＋ style.css）。C# 殻はこの dist/ を
-// WebView2 に読ませる。dist/ はコミットする（ツールチェーンが将来使えなくても
-// 動かせるように）。
+// Output goes to dist/ (bundle.js + index.html + style.css), which the C# shell loads
+// into WebView2. dist/ is committed so the app can be built even if the JS toolchain
+// becomes unavailable later.
 import * as esbuild from "esbuild";
 import { cpSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -18,11 +18,11 @@ await esbuild.build({
   format: "iife",
   outfile: join(dist, "bundle.js"),
   sourcemap: true,
-  minify: true, // 起動時のパース時間短縮（2026-09-11、未minifyで1.4MBあった）
-  target: ["chrome110"], // WebView2（Edge/Chromium）向け
+  minify: true, // Faster parsing at startup
+  target: ["chrome110"], // WebView2 (Edge/Chromium)
   logLevel: "info",
 });
 
 cpSync(join(here, "src/index.html"), join(dist, "index.html"));
 cpSync(join(here, "src/style.css"), join(dist, "style.css"));
-console.log("dist/ に出力しました");
+console.log("wrote dist/");

@@ -1,11 +1,11 @@
-"""docformats.py で fmt_cases.json を変換し、参照結果を JSON で出す。
-JS 版 docformats.js との突き合わせ用（fmt.check.mjs）。
+"""Converts fmt_cases.json with the Python reference docformats and prints the results
+as JSON, for comparison with docformats.js (fmt.check.mjs).
 
-各ケースについて：
+For each case:
   md_to_html          : markdown_to_html(md)
   html_roundtrip      : html_to_markdown(markdown_to_html(md))
   docx_roundtrip      : docx_to_markdown(markdown_to_docx(md))
-  docx_document_xml   : markdown_to_docx(md) の中の word/document.xml（生）
+  docx_document_xml   : word/document.xml inside markdown_to_docx(md) (raw)
 
     PYTHONUTF8=1 python fmt_ref.py
 """
@@ -16,10 +16,10 @@ import sys
 import zipfile
 from pathlib import Path
 
-# 旧 Python 版（editor_app.py / docformats.py）のあるフォルダ。環境変数で渡す。
+# Folder of the Python reference implementation, passed via an environment variable.
 _ref = os.environ.get("CROCO_PYREF")
 if not _ref or not Path(_ref).is_dir():
-    sys.exit(1)  # 参照実装が無い → 呼び出し側は SKIP 扱い
+    sys.exit(1)  # No reference: the caller reports SKIP
 sys.path.insert(0, _ref)
 import docformats  # noqa: E402
 

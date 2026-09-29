@@ -1,16 +1,17 @@
-// 下書き（.md 等）と「メモ広場」ノートを対応づける小さな CLI。
+// A small CLI that maps a draft (.md etc.) to its notes-panel note.
 //
-//   node claude_notes.mjs path  <下書きのパス>     対応するノートのパスを出す
-//   node claude_notes.mjs read  <下書きのパス>     ノートを読む（無ければ空）
-//   node claude_notes.mjs write <下書きのパス>     標準入力の内容をノートに書く
+//   node claude_notes.mjs path  <draft path>     Print the path of the matching note
+//   node claude_notes.mjs read  <draft path>     Print the note (empty if none)
+//   node claude_notes.mjs write <draft path>     Write stdin to the note
 //
-// エディタ（croco-editor.exe）と、下書きを手伝う側（Claude Code など、この
-// ファイルを直接呼ぶ）は別プロセスで共有 DB を持たない。それでも同じ下書きに
-// 同じノートを指せるよう、「下書きの絶対パスから決まったやり方でノートのパスを
-// 計算する」だけで対応づける。ハッシュ計算は host.cs の NotePathFor と一致。
+// The editor (croco-editor.exe) and whatever helps with the draft (Claude Code etc.,
+// which calls this file directly) are separate processes with no shared database.
+// They still land on the same note for the same draft because the note path is
+// computed from the draft's full path in a fixed way. The hash matches NotePathFor
+// in host.cs.
 //
-// ノートの置き場所は %APPDATA%\croco-editor\claude_notes（環境変数
-// CROCO_NOTE_DIR で上書き可）。ファイル名は下書きパスの sha1 先頭16桁。
+// Notes live in %APPDATA%\croco-editor\claude_notes (override with the CROCO_NOTE_DIR
+// environment variable). The file name is the first 16 hex digits of the draft path's SHA-1.
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -22,7 +23,7 @@ function noteDir() {
   );
 }
 
-// host.cs NotePathFor と同じ：絶対パス → posix 表記 → 小文字 → sha1 先頭16桁 + .md
+// Same as NotePathFor in host.cs: full path -> forward slashes -> lowercase -> first 16 hex digits of SHA-1 + .md
 export function notePathFor(draftPath) {
   const key = resolve(draftPath).replace(/\\/g, "/").toLowerCase();
   const digest = createHash("sha1").update(key, "utf8").digest("hex").slice(0, 16);
@@ -40,7 +41,7 @@ function readStdin() {
 const [action, draft] = process.argv.slice(2);
 if (!draft || !["path", "read", "write"].includes(action)) {
   process.stderr.write(
-    "usage: node claude_notes.mjs path|read|write <下書きのパス>\n",
+    "usage: node claude_notes.mjs path|read|write <draft path>\n",
   );
   process.exit(2);
 }
@@ -51,7 +52,7 @@ if (action === "path") {
   try {
     process.stdout.write(readFileSync(note, "utf8"));
   } catch {
-    /* まだ書かれていなければ空 */
+    /* not written yet: empty */
   }
 } else {
   mkdirSync(dirname(note), { recursive: true });

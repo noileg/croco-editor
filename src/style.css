@@ -1,4 +1,3 @@
-/* 新版のスタイル。現行 editor_app.py の見た目に寄せる（見出し倍率など）。 */
 :root {
   --edit-font: 11pt;
   --edit-family: "Yu Gothic UI";
@@ -88,7 +87,7 @@ body {
   min-height: 0;
 }
 #editor {
-  flex: 1 1 0; /* 実際の比率・並びは main.js の layoutPanes が欄ごとに style で与える */
+  flex: 1 1 0; /* The actual widths and order are set per pane by layoutPanes in main.js */
   min-width: 140px; /* editor_app.py MIN_PANE */
   overflow: auto;
 }
@@ -114,14 +113,14 @@ body {
   font-family: var(--edit-family), "Meiryo UI", Meiryo, sans-serif;
   background: #fbfaf8;
   overflow-anchor: none;
-  overflow-wrap: break-word; /* 長い一続きの文字列でパネルごと横に伸びるのを防ぐ */
+  overflow-wrap: break-word; /* Keep a long unbroken string from widening the panel */
 }
 #memo pre {
-  overflow-x: auto; /* コードブロックだけ横スクロール、パネル全体は伸ばさない */
+  overflow-x: auto; /* Scroll code blocks sideways instead of widening the panel */
 }
 #memo table {
   display: block;
-  overflow-x: auto; /* 表だけ横スクロール */
+  overflow-x: auto; /* Scroll tables sideways */
 }
 #memo.none {
   color: #999;
@@ -166,18 +165,18 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  direction: rtl; /* あふれたら先頭側を … にする */
+  direction: rtl; /* When it overflows, elide the start with ... */
 }
 #path.conflict {
-  color: #c01c28; /* editor_app.py _update_status の doc.conflict と同じ色 */
+  color: #c01c28;
   font-weight: bold;
-  direction: ltr; /* 警告文は先頭から読めないと意味がない */
+  direction: ltr; /* A warning must be readable from its start */
 }
 .hidden {
   display: none !important;
 }
 
-/* 右クリック文脈メニュー */
+/* Context menu */
 #ctxmenu {
   position: fixed;
   z-index: 1000;
@@ -206,12 +205,12 @@ body {
 #preview .img-ph {
   color: #999;
 }
-/* 仕切りのドラッグ中は、プレビューの iframe にマウスイベントを取られない
-   （取られると mouseup が親に届かず、ドラッグが終わらなくなる） */
+/* While a divider is being dragged, keep the preview iframe from taking mouse events
+   (otherwise mouseup never reaches the parent and the drag never ends) */
 #split.dragging iframe {
   pointer-events: none;
 }
-/* 欄がひとつも出ていないときの案内 */
+/* Hint shown when no pane is visible */
 #empty {
   flex: 1 1 auto;
   display: flex;
@@ -231,36 +230,36 @@ body {
   line-height: 1.7;
 }
 .cm-over {
-  background: #ffd9d9; /* editor_app.py "over" タグ */
+  background: #ffd9d9; /* over the limit */
 }
 .cm-tag {
-  color: #8a8a8a; /* editor_app.py "utag" タグ */
+  color: #8a8a8a;
 }
 .cm-underline {
-  text-decoration: underline; /* editor_app.py "underline"/ublock_spans タグ */
+  text-decoration: underline; /* <u> and <ublock> */
 }
 .cm-underline2 {
   text-decoration: underline;
-  background: #dcebfb; /* editor_app.py "underline2" タグ（tkinterに二重下線が無く、背景色で区別している） */
+  background: #dcebfb; /* <uu> (double underline) */
 }
 .cm-qblock {
   color: #5a5a5a;
-  background: #f0efec; /* editor_app.py "qblock" タグ */
+  background: #f0efec; /* <qblock> */
 }
 .cm-esc {
-  background: #f2e6b0; /* editor_app.py "esc" タグ */
+  background: #f2e6b0; /* <esc> */
 }
 
-/* プレビュー */
+/* Preview */
 #preview {
   padding: 16px 20px;
   line-height: 1.7;
   font-size: var(--edit-font);
   font-family: var(--edit-family), "Meiryo UI", Meiryo, sans-serif;
-  overflow-anchor: none; /* 差し替え時に表示位置が勝手にずれるのを止める */
+  overflow-anchor: none; /* Keep the view from jumping when the content is replaced */
 }
 
-/* HTML タブのプレビュー。iframe が欄いっぱいに出る（自分のスクロールバーを持つ） */
+/* Preview for HTML tabs: the iframe fills the pane (and has its own scrollbar) */
 #preview.html-mode {
   padding: 0;
   overflow: hidden;
@@ -273,7 +272,7 @@ body {
   background: #fff;
 }
 
-/* 印刷（Ctrl+Shift+P）。プレビュー欄だけを出す。 */
+/* Printing (Ctrl+Shift+P) shows the preview pane only. */
 @media print {
   #tabs,
   #toolbar,

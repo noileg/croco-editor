@@ -1,16 +1,41 @@
-// 新版の入口（webview 側）。タブ ＋ ツールバー ＋ 編集 ＋ プレビュー ＋
-// ステータスバー。メニューバーは C# 殻（WinForms）側。ファイルの読み書きも殻。
-// 殻の外（素のブラウザ）でも編集・プレビュー・字数は動く（保存だけ効かない）。
+// Entry point of the webview side: tabs, toolbar, editor, preview and status bar.
+// The menu bar and all file I/O live in the C# shell (WinForms).
+// Outside the shell (a plain browser) editing, preview and counting still work;
+// only saving does not.
 import { createEditor, isHtmlPath } from "./editor.js";
 import { renderMarkdown } from "./preview.js";
 import { analyze } from "./count.js";
 import { attachMiddleDragPan } from "./pan.js";
 import { readMarkdown, toBytes, htmlToMarkdown } from "./docformats.js";
 import * as bridge from "./bridge.js";
+import { tr, setLang } from "./i18n.js";
 
-const PRESETS = [400, 600, 800, 1000, 1200, 1600, 2000]; // editor_app.py PRESETS
+const PRESETS = [400, 600, 800, 1000, 1200, 1600, 2000];
 
-const SAMPLE = `# croco-editor（ブラウザ表示のサンプル）
+// Sample text shown when the page is opened outside the shell.
+const SAMPLE_EN = `# croco-editor (browser sample)
+
+This sample appears when the page is opened outside the app. **Bold**, *italic*, ~~strikethrough~~, \`code\`.
+
+Underline the parts <u>written with AI</u>. <uu>Double underlines</uu> are tracked separately.
+
+> A quote.
+
+- A list
+  - Nested
+
+| Item | Value |
+|---|---|
+| a | 123 |
+
+<esc>A note that stays out of the preview and the character count.</esc>
+
+---
+
+Set a limit and the text past it gets a colored background.
+`;
+
+const SAMPLE_JA = `# croco-editor（ブラウザ表示のサンプル）
 
 殻の外で開いたときのサンプル。**強調**、*弱め*、~~打ち消し~~、\`コード\`。
 
@@ -57,7 +82,7 @@ for (const n of PRESETS) {
   presetsEl.appendChild(b);
 }
 
-// --- タブ -----------------------------------------------------------------
+// --- Tabs -------------------------------------------------------------------
 // tab: { id, path, crlf, state, settings:{limit,stripMarkdown,includeWhitespace}, dirty }
 let tabs = [];
 let activeId = null;
@@ -67,15 +92,24 @@ let lastRendered = null;
 let memoVisible = false;
 let memoEditable = false;
 let memoStatus = "none";
-let memoLast = null; // 直近に描いたメモ本文（無駄な再描画を避ける）
+let memoLast = null; // Last rendered note text (skips needless redraws)
 const pendingSaves = new Map(); // reqId -> tabId
-const closeAfterSave = new Map(); // reqId -> tabId（保存が済んだら閉じる）
+const closeAfterSave = new Map(); // reqId -> tabId (close once saved)
 let reqSeq = 1;
+
+let lastCursor = { line: 1, col: 1, selLen: 0 };
+function renderCursor() {
+  const { line, col, selLen } = lastCursor;
+  posEl.textContent =
+    tr(`Ln ${line}, Col ${col}`, `${line} 行 ${col} 列`) +
+    (selLen ? tr(` (${selLen} selected)`, `（選択 ${selLen} 字）`) : "");
+}
 
 const ed = createEditor($("editor"), {
   onChange,
-  onCursor: ({ line, col, selLen }) => {
-    posEl.textContent = `${line} 行 ${col} 列` + (selLen ? `（選択 ${selLen} 字）` : "");
+  onCursor: (c) => {
+    lastCursor = c;
+    renderCursor();
   },
   onZoom: (pt) => {
     ptEl.textContent = `${pt} pt`;
@@ -91,11 +125,8 @@ function newSettings() {
   return { limit: 0, stripMarkdown: false, includeWhitespace: true };
 }
 
-// editor_app.py open_path: strip_markdown=path.suffix.lower() in (".md", ".markdown")。
-// 新規に開く（復元ではない）ファイルの既定値を拡張子から決める。
-// 2026-09-11、レビューで発覚：addTab の呼び出し側がどこも settings を渡して
-// おらず、.md を開いても「記法を数えない」が既定でONにならなかった
-// （文字数管理が主目的のアプリなので実害が小さくない）。
+// Default for "Ignore markup" when a file is newly opened (not restored):
+// on for .md / .markdown.
 function stripMarkdownForPath(path) {
   if (!path) return false;
   const ext = (path.match(/\.[^.\\/]*$/) || [""])[0].toLowerCase();
@@ -107,13 +138,13 @@ function addTab({ path = null, crlf = false, text = "", settings = null, dirty =
     id: seq++,
     path,
     crlf,
-    title, // path が無いとき（取り込み等）にタブへ出す名前
+    title, // Name shown on the tab when there is no path (e.g. an import)
     state: ed.makeState(text, path),
     settings: settings ? { ...newSettings(), ...settings } : newSettings(),
     dirty,
-    conflict: false, // 外部でも変更あり・自動保存を停止中（editor_app.py doc.conflict）
+    conflict: false, // Changed externally too; autosave is paused for this tab
     memoOverride,
-    // エディタ欄を出すか（タブごと）。既定は Markdown なら出す・HTML なら出さない（描画だけ見る）。
+    // Whether the editor pane is shown (per tab). Shown for Markdown, hidden for HTML (view the rendering only).
     editorOn: editorOn === undefined ? !isHtmlPath(path) : editorOn,
   };
   tabs.push(t);
@@ -125,24 +156,24 @@ function addTab({ path = null, crlf = false, text = "", settings = null, dirty =
 function switchTab(id) {
   if (id === activeId) return;
   const cur = active();
-  if (cur) cur.state = ed.getState(); // 離れるタブの生の状態を保存
+  if (cur) cur.state = ed.getState(); // Keep the live state of the tab we're leaving
   activeId = id;
   const t = active();
   ed.setState(t.state);
   ed.setActiveSettings(t.settings);
   syncToolbar();
   updatePath();
-  applyEditorVisibility(); // このタブのエディタ欄の出し入れを欄の並びに反映
+  applyEditorVisibility(); // Apply this tab's editor visibility to the pane layout
   lastRendered = null;
   refresh(ed.getText());
   sendTitle();
   renderTabs();
-  updateMemoWatch(); // メモの手動指定はタブごと
+  updateMemoWatch(); // The manual note choice is per tab
   pushSession();
   ed.focus();
 }
 
-// --- メモ広場 --------------------------------------------------------
+// --- Notes panel ------------------------------------------------------------
 function toggleMemo(force) {
   memoVisible = force === undefined ? !memoVisible : force;
   layoutPanes();
@@ -150,7 +181,7 @@ function toggleMemo(force) {
   updateMemoWatch();
 }
 function toggleMemoEdit() {
-  if (memoEditable) flushMemo(); // 編集モードを抜けるとき保存
+  if (memoEditable) flushMemo(); // Save when leaving edit mode
   memoEditable = !memoEditable;
   bridge.setMemoMenu(memoVisible, memoEditable);
   memoLast = null;
@@ -187,11 +218,11 @@ function renderMemo(status, content) {
     return;
   }
   if (status === "none") {
-    memoEl.textContent = content; // 「保存された下書きにのみ…」
+    memoEl.textContent = content; // e.g. "available only for saved drafts"
     memoLast = null;
     return;
   }
-  const body = status === "empty" ? "（まだメモはありません）" : content;
+  const body = status === "empty" ? tr("(No notes yet)", "（まだメモはありません）") : content;
   if (body === memoLast) return;
   const keep = memoEl.scrollTop;
   memoEl.innerHTML = renderMarkdown(body);
@@ -199,7 +230,7 @@ function renderMemo(status, content) {
   memoLast = body;
 }
 
-// --- セッション（開いているタブの一覧）を殻に預ける ---------------------
+// --- Session (the list of open tabs), kept by the shell -----------------------
 let sessionTimer = null;
 function pushSession() {
   if (!bridge.inShell) return;
@@ -214,8 +245,7 @@ function pushSession() {
       tabs: tabs.map((t) => ({
         path: t.path || null,
         crlf: t.crlf,
-        // 本文は常に持たせる（殻は JSON を解釈しないため、復元は session の
-        // 本文だけが頼り。自動保存でファイル＝バッファなので陳腐化はまず無い）。
+        // Always include the text: the shell doesn't parse this JSON, so restoring relies on it.
         text: t.id === activeId ? ed.getText() : t.state.doc.toString(),
         dirty: t.dirty,
         limit: t.settings.limit,
@@ -240,7 +270,7 @@ function closeTab(id, force) {
   const t = tabs.find((x) => x.id === id);
   if (!t) return;
   if (!force && t.dirty && bridge.inShell) {
-    // 現行 editor_app と同じ はい/いいえ/キャンセル を殻の MessageBox で出す。
+    // Ask Yes/No/Cancel with a MessageBox in the shell.
     bridge.askCloseTab(id, tabName(t));
     return;
   }
@@ -262,7 +292,7 @@ function closeTab(id, force) {
 
 function tabName(t) {
   if (t.path) return t.path.split(/[\\/]/).pop();
-  return t.title || "無題";
+  return t.title || tr("Untitled", "無題");
 }
 
 function renderTabs() {
@@ -285,7 +315,7 @@ function renderTabs() {
     el.addEventListener("mousedown", (e) => {
       if (e.button === 1) {
         e.preventDefault();
-        closeTab(t.id); // 現行 editor_app._on_middle_click（タブ中クリックで閉じる）
+        closeTab(t.id); // Middle-click a tab to close it
       } else if (e.button === 0) {
         switchTab(t.id);
       }
@@ -294,16 +324,15 @@ function renderTabs() {
   }
 }
 
-// --- 保存 ---------------------------------------------------------------
+// --- Saving -----------------------------------------------------------------
 let saveTimer = null;
 function scheduleAutosave() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const t = active();
-    // 自動保存はパスのあるタブだけ。無題タブで走らせると毎回保存ダイアログが
-    // 開く（中身はセッションに残るので閉じても消えない）。外部でも変更されて
-    // conflict になっているタブは、本人が明示的に保存し直すまで自動保存を止める
-    // （editor_app.py _autosave_files。「無条件の上書きはしない」）。
+    // Autosave only tabs with a path; untitled tabs would open a save dialog every
+    // time (their text is kept in the session anyway). Tabs in conflict (changed
+    // externally too) are not autosaved until the user saves them explicitly.
     if (t && t.dirty && t.path && !t.conflict) saveTab(t, false);
   }, 600);
 }
@@ -323,13 +352,13 @@ function setDirty(t, d) {
   renderTabs();
   if (t.id === activeId) {
     sendTitle();
-    updateMemoWatch(); // 殻へ dirty を伝え直す（外部変更の追従可否に使う）
+    updateMemoWatch(); // Tell the shell the new dirty state (it decides whether to follow external changes)
   }
   bridge.setAnyDirty(tabs.some((x) => x.dirty));
   pushSession();
 }
 
-// --- 変更・描画 -------------------------------------------------------
+// --- Changes and rendering ----------------------------------------------------
 function onChange(text, isLoad) {
   refresh(text);
   if (isLoad) return;
@@ -342,42 +371,43 @@ function onChange(text, isLoad) {
 function refresh(text) {
   const s = active() ? active().settings : newSettings();
   const { total } = analyze(text, s.limit, s.stripMarkdown, s.includeWhitespace);
-  countEl.textContent = `${total} 字`;
+  countEl.textContent = tr(`${total} chars`, `${total} 字`);
   countEl.classList.toggle("over", s.limit > 0 && total > s.limit);
-  // HTML タブと Markdown タブでは描き方が違うので、種別も込みで前回と比べる。
+  // HTML and Markdown tabs render differently, so the kind is part of the comparison.
   const key = (activeIsHtml() ? "H:" : "M:") + text;
   if (previewOn && key !== lastRendered) {
     const first = lastRendered === null;
     lastRendered = key;
     clearTimeout(htmlTimer);
     if (activeIsHtml()) {
-      // 打鍵ごとに iframe を作り直すとちらつくので少し待つ（切り替え直後は即）
+      // Rebuilding the iframe on every keystroke flickers, so wait a little (right away after a switch)
       htmlTimer = setTimeout(renderHtmlNow, first ? 0 : 250);
     } else {
       htmlFrame = null;
       previewEl.classList.remove("html-mode");
       previewEl.innerHTML = renderMarkdown(text);
-      syncPreviewToEditor(); // 描き直したらエディタの位置へ合わせ直す
+      syncPreviewToEditor(); // After redrawing, line up with the editor again
     }
   }
 }
 
-// --- HTML タブのプレビュー ---------------------------------------------
-// .html/.htm のタブは markdown-it を通さず、iframe にそのまま描画する。
-// sandbox に allow-scripts を入れない＝スクリプトは動かさない（プレビュー内から
-// 殻へメッセージを送れる口を作らないため）。allow-same-origin は、親がiframeの中を
-// 触る（スクロール同期・ショートカットの転送）のに要る。スクリプトが無いので安全側。
+// --- Preview for HTML tabs ----------------------------------------------------
+// .html/.htm tabs skip markdown-it and render as-is in an iframe. The sandbox has no
+// allow-scripts, so scripts don't run (and the preview has no way to message the
+// shell). allow-same-origin lets the parent reach into the iframe for scroll sync
+// and forwarding shortcuts, which is safe with scripts off.
 let htmlFrame = null;
 let htmlTimer = null;
-let docBase = null; // 殻の doc.local が今指しているフォルダ
+let docBase = null; // Folder the shell's doc.local currently points to
 
 function activeIsHtml() {
   const t = active();
   return !!t && isHtmlPath(t.path);
 }
 
-// 相対パスの画像・CSS が doc.local（＝そのHTMLのフォルダ）から読めるよう <base> を足す。
-// doctype より前に置くと quirks モードになるので、head → html → doctype の後、の順に探す。
+// Add a <base> so relative images and CSS load from doc.local (the HTML file's folder).
+// A <base> before the doctype would trigger quirks mode, so look for head, then html,
+// then the doctype.
 function withBase(text) {
   const tag = '<base href="https://doc.local/">';
   for (const re of [/<head(\s[^>]*)?>/i, /<html(\s[^>]*)?>/i, /<!doctype[^>]*>/i]) {
@@ -404,7 +434,7 @@ function renderHtmlNow() {
     htmlFrame.srcdoc = withBase(ed.getText());
   };
   if (folder !== docBase) {
-    // フォルダの割り当ては殻への非同期メッセージなので、届くのを少し待ってから描く
+    // The folder mapping is an async message to the shell, so give it a moment before drawing
     docBase = folder;
     bridge.setDocBase(folder);
     setTimeout(draw, 60);
@@ -416,11 +446,11 @@ function renderHtmlNow() {
 function onHtmlFrameLoad() {
   const w = htmlFrame && htmlFrame.contentWindow;
   if (!w) return;
-  // iframe の中にフォーカスがあってもアプリのショートカットが効くようにする
+  // Keep the app's shortcuts working while focus is inside the iframe
   w.addEventListener("keydown", onAppKeydown, true);
   w.addEventListener("wheel", onAppWheel, { capture: true, passive: false });
-  // 中ボタンドラッグでのパンも、エディタ・Markdownのプレビューと同じ挙動にする。
-  // srcdoc を描き直すたびに中身の window は作り直されるので、読み込みごとに付ける。
+  // Middle-button drag panning works as in the editor and the Markdown preview. The
+  // iframe gets a new window whenever srcdoc is redrawn, so attach it on each load.
   const d = htmlFrame.contentDocument;
   if (d && d.scrollingElement) attachMiddleDragPan(d.scrollingElement, w);
   syncPreviewToEditor();
@@ -432,8 +462,8 @@ function applySettings() {
   pushSession();
 }
 
-// エディタ欄の表示・非表示（タブごと。HTMLのタブは既定で消えている）。
-// 欄の並びと比率は layoutPanes（下の「欄の並びと比率」）が決める。
+// Editor pane visibility (per tab; hidden by default for HTML tabs).
+// Pane order and widths are handled by layoutPanes (see "Pane order and widths" below).
 function applyEditorVisibility() {
   const t = active();
   layoutPanes();
@@ -463,7 +493,7 @@ function updatePath() {
   const conflict = !!(t && t.conflict);
   pathEl.classList.toggle("conflict", conflict);
   if (conflict) {
-    pathEl.textContent = t.path + "（外部でも変更あり・自動保存を停止中。Ctrl+S でどちらを残すか選べます）";
+    pathEl.textContent = t.path + tr("  (also changed externally; autosave paused. Press Ctrl+S to choose which version to keep)", "（外部でも変更あり・自動保存を停止中。Ctrl+S でどちらを残すか選べます）");
     return;
   }
   pathEl.textContent = t && t.path ? t.path : "";
@@ -471,7 +501,7 @@ function updatePath() {
 
 function sendTitle() {
   const t = active();
-  bridge.setTitle(t ? tabName(t) : "無題", t ? t.dirty : false);
+  bridge.setTitle(t ? tabName(t) : tr("Untitled", "無題"), t ? t.dirty : false);
 }
 
 function syncToolbar() {
@@ -481,15 +511,14 @@ function syncToolbar() {
   wsEl.checked = s.includeWhitespace;
 }
 
-// --- 殻からのメッセージ -------------------------------------------------
+// --- Messages from the shell --------------------------------------------------
 bridge.onLoad(({ path, crlf, text }) => {
-  // 起動時の最初のタブ（前回セッションが無いとき）
+  // First tab at startup (when there is no previous session)
   addTab({ path, crlf, text, settings: { stripMarkdown: stripMarkdownForPath(path) } });
 });
 bridge.onRestore(({ tabs: saved, active: activeIdx, memoVisible: mv, memoEditable: me, paneOrder: po, paneRatios: pr }) => {
-  // 旧版の splitRatio（エディタとプレビューの2分割だけの比率）は引き継がない。
   if (pr && typeof pr === "object") paneRatios = pr;
-  // 前回開いていたタブを復元
+  // Restore the tabs that were open last time
   for (const s of saved || []) {
     addTab({
       path: s.path || null,
@@ -508,36 +537,30 @@ bridge.onRestore(({ tabs: saved, active: activeIdx, memoVisible: mv, memoEditabl
   }
   memoEditable = !!me;
   if (mv) toggleMemo(true);
-  // 並びは、タブを復元し終えてから戻す（途中の切り替えで崩れないように）
+  // Restore the order after all tabs are back, so switching tabs midway can't disturb it
   if (Array.isArray(po)) {
     paneOrder = po.filter((n) => PANE_NAMES.includes(n));
     layoutPanes();
   }
 });
 bridge.onOpened(({ path, crlf, text }) => {
-  // 既に同じファイルを開いていればそのタブへ切り替える。殻は毎回ファイルを
-  // 読み直してから渡してくる（OpenAsTab）ので、未編集（dirtyでない）なら
-  // その最新の中身に差し替える。でないと同じファイルを何度開き直しても
-  // 最初に開いたときの内容のまま固まる（2026-09-11、本人指摘で発覚：
-  // 「開く際は完全に開くファイルに依存しとけよ」）。dirtyなタブは未保存の
-  // 編集を黙って消さないよう据え置く（今出ているタブに*が付いたまま）。
+  // If the file is already open, switch to that tab. The shell re-reads the file on
+  // every open, so an unedited tab is refreshed with the latest content. A tab with
+  // unsaved edits is left alone so they are never silently discarded.
   const exist = path && tabs.find((t) => t.path === path);
   if (exist) {
     switchTab(exist.id);
     if (!exist.dirty) {
       exist.crlf = crlf;
       exist.conflict = false;
-      ed.setText(text, true); // silent＝dirty化しない
+      ed.setText(text, true); // silent: don't mark dirty
       exist.state = ed.getState();
       refresh(text);
     }
     return;
   }
-  // 今出ているタブが空の無題タブ（パス無し・未編集・本文なし）ならそこへ読み込む。
-  // 新規タブを増やさない（editor_app.py open_path「空の無題タブは使い回す」）。
-  // 旧版はこのとき Doc を丸ごと新規に作り直す（＝settings も memoOverride も
-  // 既定へ戻る）ので、ここも同じく作り直す（前の空タブに残っていた値を
-  // 持ち越さない。2026-09-11、レビューで発覚）。
+  // If the current tab is an empty untitled tab (no path, unedited, no text), load
+  // into it instead of adding a tab, resetting its settings to the defaults.
   const cur = active();
   if (cur && !cur.path && !cur.dirty && ed.getText() === "") {
     cur.path = path;
@@ -572,12 +595,12 @@ bridge.onSaved(({ reqId, path }) => {
   const pathChanged = !!path && path !== t.path;
   if (path) t.path = path;
   if (pathChanged && t.id === activeId) {
-    // .md → .html などで種別が変わりうる。言語もプレビューも付け替える。
+    // The kind may change (e.g. .md -> .html), so switch the language mode and preview too.
     ed.setLanguage(t.path);
     lastRendered = null;
     refresh(ed.getText());
   }
-  t.conflict = false; // 書けた＝解消（明示保存で「はい」＝上書きを選んだ場合を含む）
+  t.conflict = false; // Written, so resolved (including "Yes" to overwrite on an explicit save)
   setDirty(t, false);
   if (t.id === activeId) {
     updatePath();
@@ -589,9 +612,9 @@ bridge.onSaved(({ reqId, path }) => {
   }
 });
 bridge.onConflict(({ reqId, path }) => {
-  // 自動保存（idle timer）が外部変更を検知して書かずに諦めた。打っている
-  // 最中にダイアログで割り込まないので、タブを止めて本人に知らせるだけ
-  // （明示保存すれば殻側が選択肢を出す＝ onReloaded／通常の saved）。
+  // Autosave found an external change and gave up without writing. Rather than
+  // interrupt typing with a dialog, pause the tab and show it in the status bar
+  // (an explicit save lets the shell offer the choices: onReloaded / saved).
   const tabId = pendingSaves.get(reqId);
   pendingSaves.delete(reqId);
   const t = tabs.find((x) => x.id === tabId);
@@ -601,9 +624,9 @@ bridge.onConflict(({ reqId, path }) => {
   bridge.diag("conflict: " + (path || t.path));
 });
 bridge.onReloaded(({ reqId, crlf, text }) => {
-  // 明示保存の競合で「いいえ」＝外部の内容を読み込む、を選んだ。書かずに
-  // このタブの中身を外部の内容へ差し替える（このタブの未保存の変更は消える。
-  // 本人が選択肢として選んだ結果なので警告はここでは出さない）。
+  // On an explicit save conflict the user chose "No" (load the external version).
+  // Replace this tab's text without writing; its unsaved changes are discarded, as
+  // chosen.
   const tabId = pendingSaves.get(reqId);
   pendingSaves.delete(reqId);
   const t = tabs.find((x) => x.id === tabId);
@@ -611,7 +634,7 @@ bridge.onReloaded(({ reqId, crlf, text }) => {
   t.crlf = crlf;
   t.conflict = false;
   if (t.id === activeId) {
-    ed.setText(text, true); // silent＝dirty化しない
+    ed.setText(text, true); // silent: don't mark dirty
     t.state = ed.getState();
   } else {
     t.state = ed.makeState(text, t.path);
@@ -624,19 +647,18 @@ bridge.onReloaded(({ reqId, crlf, text }) => {
   renderTabs();
   if (closeAfterSave.has(reqId)) {
     closeAfterSave.delete(reqId);
-    closeTab(t.id, true); // 外部の内容に差し替えた上で、元々の「閉じる」を続行
+    closeTab(t.id, true); // Replaced with the external version; carry on with the original close
   }
 });
 bridge.onExternalUpdate(({ path, crlf, text }) => {
-  // アクティブなタブが未編集のまま外部で変わった。殻からの一方的な通知
-  // （保存は絡まない）。念のためここでも「今もそのパスのまま・未編集か」を
-  // 確認してから差し替える（殻が検知した瞬間と届いた瞬間の間にタブを
-  // 切り替えたり編集し始めたりした場合に備える）。
+  // The active tab changed on disk while unedited (a one-way notice from the shell,
+  // unrelated to saving). Check again that the tab still has that path and no edits,
+  // in case the user switched tabs or started typing in the meantime.
   const t = tabs.find((x) => x.path === path);
   if (!t || t.dirty) return;
   t.crlf = crlf;
   if (t.id === activeId) {
-    ed.setText(text, true); // silent＝dirty化しない
+    ed.setText(text, true); // silent: don't mark dirty
     t.state = ed.getState();
     refresh(text);
   } else {
@@ -650,18 +672,49 @@ bridge.onFlushSave(() => {
 });
 bridge.onMemo(({ status, content }) => renderMemo(status, content));
 
-// docx / html / zip の取り込み。殻がバイトを base64 で渡す → Markdown にして
-// 新しいタブへ（取り込みなのでパス無し・未保存＝Ctrl+S で保存先を訊く）。
+// Text in index.html that depends on the language.
+function applyStaticText() {
+  $("lbl-limit").textContent = tr("Limit", "上限");
+  $("lbl-unit").textContent = tr("chars", "字");
+  $("lbl-ws").textContent = tr("Count spaces", "空白も数える");
+  $("lbl-strip").textContent = tr("Ignore markup", "記法を数えない");
+  $("empty").textContent = tr(
+    "No panes shown (Ctrl+Shift+E: editor   Ctrl+P: preview   Ctrl+M: notes)",
+    "表示する欄がありません（Ctrl+Shift+E：エディタ　Ctrl+P：プレビュー　Ctrl+M：メモ広場）",
+  );
+  renderCursor();
+}
+
+// The language was switched: redraw every piece of text, and re-send the states
+// behind the check marks of the shell's rebuilt menu.
+bridge.onLang((lang) => {
+  setLang(lang);
+  applyStaticText();
+  renderTabs();
+  sendTitle();
+  updatePath();
+  lastRendered = null;
+  refresh(ed.getText());
+  memoLast = null;
+  updateMemoWatch(); // The shell replies with the note (or its "unavailable" text)
+  bridge.setPreview(previewOn);
+  bridge.setEditor(!active() || active().editorOn);
+  bridge.setWrap(ed.wrapOn());
+  bridge.setMemoMenu(memoVisible, memoEditable);
+});
+
+// Importing docx / zip. The shell sends the bytes as base64; convert them to Markdown
+// and open a new tab (no path and unsaved, so Ctrl+S asks where to save).
 bridge.onImport(({ path, ext, b64 }) => {
   try {
     const md = readMarkdown(ext, bridge.b64decode(b64));
     const stem = (path || "").split(/[\\/]/).pop().replace(/\.[^.]+$/, "");
-    // editor_app.py: 取り込みは常に strip_markdown=True
-    // （変換で入る <u> 等のタグ記法を文字数に含めないため）。
+    // Imports always ignore markup when counting, so tags added by the conversion
+    // (<u> etc.) don't count.
     addTab({
       text: md,
       dirty: true,
-      title: stem ? stem + ".md" : "取り込み",
+      title: stem ? stem + ".md" : tr("Imported", "取り込み"),
       settings: { stripMarkdown: true },
     });
   } catch (e) {
@@ -669,7 +722,7 @@ bridge.onImport(({ path, ext, b64 }) => {
   }
 });
 
-// 「形式を変換して保存」。殻が保存先と拡張子を渡す → その形式のバイトを返す。
+// Export as. The shell passes the destination and extension; reply with the bytes in that format.
 bridge.onExportRequest(({ path, ext }) => {
   try {
     const t = active();
@@ -677,7 +730,7 @@ bridge.onExportRequest(({ path, ext }) => {
     const text = ed.getText();
     const e = ext.toLowerCase();
     if (t && isHtmlPath(t.path)) {
-      // HTML タブ：HTML へはそのまま、それ以外へは Markdown を経由して変換する
+      // HTML tab: as-is for HTML, via Markdown for other formats
       const bytes =
         e === ".html" || e === ".htm"
           ? new TextEncoder().encode(crlf ? text.replace(/\n/g, "\r\n") : text)
@@ -691,8 +744,7 @@ bridge.onExportRequest(({ path, ext }) => {
   }
 });
 
-// メニュー（殻から）と window キー入力（下）の両方から呼ぶコマンド実行。
-// cmd は現行の「ファイル」「編集」「表示」メニュー項目に対応。
+// Runs a command from the shell's menu or from the key handler below.
 function doCommand(cmd) {
   const m = ed.menu;
   if (cmd.startsWith("pane-move:")) {
@@ -716,7 +768,7 @@ function doCommand(cmd) {
     return;
   }
   if (cmd.startsWith("open-relative\n")) {
-    // プレビュー内の相対リンク。アクティブタブのフォルダから解決して殻へ。
+    // Relative link in the preview: resolve it against the active tab's folder and pass it to the shell.
     const rel = cmd.slice("open-relative\n".length).split("#")[0];
     const base = active() && active().path ? active().path.replace(/[\\/][^\\/]*$/, "") : "";
     if (!base) return;
@@ -732,7 +784,7 @@ function doCommand(cmd) {
     if (choice === "discard") {
       closeTab(id, true);
     } else if (choice === "save") {
-      // 保存してから閉じる。saved を待って閉じる。
+      // Save first, then close once "saved" comes back.
       const reqId = reqSeq++;
       pendingSaves.set(reqId, t.id);
       closeAfterSave.set(reqId, t.id);
@@ -747,7 +799,7 @@ function doCommand(cmd) {
     "save-as": () => saveTab(active(), true),
     "close-tab": () => closeTab(activeId),
     print: () => {
-      // HTML タブは iframe の中身を印刷する（親ごとだと iframe の見えている分しか出ない）
+      // For HTML tabs print the iframe's document (printing the parent only shows the iframe's visible part)
       if (activeIsHtml() && previewOn && htmlFrame && htmlFrame.contentWindow) htmlFrame.contentWindow.print();
       else window.print();
     },
@@ -791,11 +843,11 @@ function doCommand(cmd) {
 
 bridge.onMenu(doCommand);
 
-// アプリのショートカットは window レベルで拾う（capture）。編集欄・プレビュー
-// 欄・メモ欄のどこにフォーカスがあっても効かせる（本人指摘）。CodeMirror 既定
-// （Undo・全選択・コピペ・カーソル移動）はここでは触らない＝素通しさせる。
-// 物理キー（e.code）で判定する。Ctrl+M は環境によって e.key が "Enter"（CR）に
-// なるため e.key では取りこぼす。
+// App shortcuts are caught at window level (capture phase) so they work wherever
+// focus is: editor, preview or notes panel. CodeMirror's own keys (undo, select all,
+// copy/paste, cursor movement) pass through untouched.
+// Match on the physical key (e.code): on some setups Ctrl+M reports e.key as "Enter"
+// (CR), so e.key would miss it.
 const KEYMAP = [
   ["c", false, "KeyN", "new"],
   ["c", true, "KeyN", "new-window"],
@@ -806,7 +858,7 @@ const KEYMAP = [
   ["c", false, "KeyW", "close-tab"],
   ["c", false, "Tab", "next-tab"],
   ["c", true, "Tab", "prev-tab"],
-  ["c", false, "PageUp", "prev-tab"], // 現行 editor_app の割り当て
+  ["c", false, "PageUp", "prev-tab"],
   ["c", false, "PageDown", "next-tab"],
   ["c", false, "KeyP", "toggle-preview"],
   ["c", true, "KeyE", "toggle-editor"],
@@ -818,7 +870,7 @@ const KEYMAP = [
   ["c", true, "KeyU", "underline-double"],
   ["c", false, "KeyE", "esc"],
   ["c", false, "Equal", "zoom-in"],
-  ["c", false, "Semicolon", "zoom-in"], // JIS 配列で Ctrl+; の位置が ＋
+  ["c", false, "Semicolon", "zoom-in"], // Ctrl+; is where + sits on a JIS keyboard
   ["c", false, "Minus", "zoom-out"],
   ["c", false, "Digit0", "zoom-reset"],
   ["n", false, "F3", "find-next"],
@@ -826,9 +878,9 @@ const KEYMAP = [
 ];
 function onAppKeydown(e) {
   if (e.altKey || e.metaKey) return;
-  // IME変換中のキー（Enter/Space/矢印等での確定・候補選択）を横取りしない。
-  // KEYMAP は全項目 Ctrl 併用（F3系を除く）で変換中に押される組合せとは
-  // 重ならないため実害は無いはずだが、念のため素通しさせる。
+  // Don't intercept keys while an IME is composing (Enter/Space/arrows confirm or pick
+  // candidates). KEYMAP always uses Ctrl (except F3), so there should be no overlap,
+  // but let them through to be safe.
   if (e.isComposing || e.keyCode === 229) return;
   for (const [ctrl, shift, code, cmd] of KEYMAP) {
     if (ctrl === "c" && !e.ctrlKey) continue;
@@ -843,7 +895,7 @@ function onAppKeydown(e) {
 }
 window.addEventListener("keydown", onAppKeydown, true);
 
-// Ctrl+ホイールでズーム（現行 _on_ctrl_wheel）。
+// Ctrl+wheel zooms.
 function onAppWheel(e) {
   if (!e.ctrlKey) return;
   e.preventDefault();
@@ -851,7 +903,7 @@ function onAppWheel(e) {
 }
 window.addEventListener("wheel", onAppWheel, { capture: true, passive: false });
 
-// --- ツールバー（アクティブなタブの設定を書き換える） -------------------
+// --- Toolbar (edits the active tab's settings) --------------------------------
 limitEl.addEventListener("input", () => {
   active().settings.limit = parseInt(limitEl.value, 10) || 0;
   applySettings();
@@ -865,27 +917,27 @@ wsEl.addEventListener("change", () => {
   applySettings();
 });
 
-attachMiddleDragPan(previewEl); // プレビュー欄でも中ボタンドラッグでスクロール
+attachMiddleDragPan(previewEl); // Middle-button drag scrolling in the preview too
 attachMiddleDragPan(memoEl);
 
-// --- 編集欄の右クリック文脈メニュー（現行 _popup_context） --------------
+// --- Context menu for the editor ----------------------------------------------
 const ctxMenu = document.createElement("div");
 ctxMenu.id = "ctxmenu";
 ctxMenu.hidden = true;
 document.body.appendChild(ctxMenu);
-const CTX_ITEMS = [
-  ["元に戻す", "undo"],
-  ["やり直し", "redo"],
+const ctxItems = () => [
+  [tr("Undo", "元に戻す"), "undo"],
+  [tr("Redo", "やり直し"), "redo"],
   ["-"],
-  ["切り取り", "cut"],
-  ["コピー", "copy"],
-  ["貼り付け", "paste"],
+  [tr("Cut", "切り取り"), "cut"],
+  [tr("Copy", "コピー"), "copy"],
+  [tr("Paste", "貼り付け"), "paste"],
   ["-"],
-  ["下線", "underline"],
-  ["下線（二重）", "underline-double"],
-  ["選択範囲に一括で下線", "bulk-underline"],
-  ["エスケープ（文字数から除外）", "esc"],
-  ["すべて選択", "select-all"],
+  [tr("Underline", "下線"), "underline"],
+  [tr("Double underline", "下線（二重）"), "underline-double"],
+  [tr("Underline selection", "選択範囲に一括で下線"), "bulk-underline"],
+  [tr("Escape (exclude from the count)", "エスケープ（文字数から除外）"), "esc"],
+  [tr("Select all", "すべて選択"), "select-all"],
 ];
 function hideCtx() {
   ctxMenu.hidden = true;
@@ -893,7 +945,7 @@ function hideCtx() {
 ed.view.dom.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   ctxMenu.textContent = "";
-  for (const [label, cmd] of CTX_ITEMS) {
+  for (const [label, cmd] of ctxItems()) {
     if (label === "-") {
       const sep = document.createElement("div");
       sep.className = "ctx-sep";
@@ -924,14 +976,16 @@ window.addEventListener("keydown", (e) => {
 });
 window.addEventListener("blur", hideCtx);
 
-// --- 欄の並びと比率 -----------------------------------------------------
-// エディタ・プレビュー・メモ広場は対等な3つの欄で、それぞれ独立に出し入れできる。
-//  - 並びは「出した順」（paneOrder の先頭が左端）。消した欄は並びから外れ、
-//    また出すと右端に付く。メニューの「欄の並び」で入れ替えられる
-//  - 幅の比率は「どの欄が出ているかの組み合わせ」ごとに覚える（paneRatios）。
-//    キーは欄名を並べ替えて "+" で繋いだもの、値は 欄名 → 比率。欄ごとに持つので、
-//    並びを変えても各欄の比率は保たれる。session に覚える
-//  - 全部消すと空白（中央に案内だけ）。エディタ欄へ勝手に戻したりはしない
+// --- Pane order and widths ----------------------------------------------------
+// The editor, preview and notes panel are three equal panes, each shown or hidden
+// on its own.
+//  - Order is the order they were shown (paneOrder[0] is leftmost). A hidden pane
+//    leaves the order and rejoins at the right end. View > Pane order reorders them.
+//  - Widths are remembered per combination of visible panes (paneRatios). The key is
+//    the sorted pane names joined with "+", the value maps pane name -> share. Shares
+//    are per pane, so reordering keeps each pane's width. Saved in the session.
+//  - With every pane hidden the area is blank apart from a hint. Nothing is brought
+//    back automatically.
 const PANE_NAMES = ["editor", "preview", "memo"];
 const PANES = { editor: $("editor"), preview: previewEl, memo: memoEl };
 const gutters = [$("gutter1"), $("gutter2")];
@@ -939,7 +993,7 @@ const emptyEl = $("empty");
 const MIN_PANE = 140; // editor_app.py MIN_PANE
 let paneOrder = ["editor", "preview"];
 let paneRatios = {}; // { "editor+preview": { editor: 0.5, preview: 0.5 }, ... }
-let paneFr = []; // いま出している欄の比率（paneOrder と同じ並び。合計1）
+let paneFr = []; // Shares of the visible panes (same order as paneOrder, summing to 1)
 
 function paneVisible(name) {
   if (name === "editor") {
@@ -969,7 +1023,7 @@ function layoutPanes() {
     el.classList.toggle("hidden", i < 0);
     if (i >= 0) {
       el.style.order = String(2 * i);
-      el.style.flex = `${paneFr[i] * 1000} 1 0`; // 基準幅0・伸びる割合で比率を表す
+      el.style.flex = `${paneFr[i] * 1000} 1 0`; // Zero basis; the grow factor carries the share
     }
   }
   gutters.forEach((g, i) => {
@@ -988,7 +1042,7 @@ function movePane(name, dir) {
   layoutPanes();
 }
 
-// 隣り合う2つの欄の境目をドラッグ。その2つの合計は変えず、配分だけ動かす。
+// Dragging the border between two adjacent panes moves the split between them; their combined width stays the same.
 gutters.forEach((g, gi) => {
   g.addEventListener("mousedown", (e) => {
     e.preventDefault();
@@ -996,11 +1050,11 @@ gutters.forEach((g, gi) => {
     const b = PANES[paneOrder[gi + 1]];
     if (!a || !b) return;
     const left = a.getBoundingClientRect().left;
-    const span = b.getBoundingClientRect().right - left - g.offsetWidth; // 2つの欄の幅の合計
+    const span = b.getBoundingClientRect().right - left - g.offsetWidth; // Combined width of the two panes
     const pair = paneFr[gi] + paneFr[gi + 1];
     splitEl.classList.add("dragging");
     const onMove = (ev) => {
-      // ボタンが離されているのに mouseup を取り逃がした場合は、そこで終える
+      // If the button is already up but we missed the mouseup, end here
       if (ev.buttons === 0) {
         onUp();
         return;
@@ -1024,18 +1078,18 @@ gutters.forEach((g, gi) => {
   });
 });
 
-// --- エディタ → プレビューのスクロール同期（現行 _sync_preview 相当） -----
-// 編集欄の一番上に見えている行に対応するプレビュー要素を、プレビュー欄の
-// 上端へ寄せる。<esc>/<ublock>/<qblock> の展開で行数がずれる分だけ誤差が出る
-// が、無いよりは合う（現行の line_map も近似）。
+// --- Editor -> preview scroll sync --------------------------------------------
+// Bring the preview element for the editor's top visible line to the top of the
+// preview. Expanding <esc>/<ublock>/<qblock> can shift lines a little, so it is
+// approximate.
 let syncRaf = 0;
 function syncPreviewToEditor() {
   syncRaf = 0;
   if (!previewOn) return;
-  if (active() && !active().editorOn) return; // エディタ欄が消えているので合わせる相手がいない
+  if (active() && !active().editorOn) return; // Editor pane is hidden; nothing to follow
   const sv = ed.view.scrollDOM;
   if (activeIsHtml()) {
-    // HTML には行番号の目印が無いので、スクロール量の割合で合わせる
+    // HTML has no line markers, so match by scroll ratio
     try {
       const w = htmlFrame && htmlFrame.contentWindow;
       const d = htmlFrame && htmlFrame.contentDocument;
@@ -1049,11 +1103,11 @@ function syncPreviewToEditor() {
   let topLine = 1;
   try {
     const pos = ed.view.posAtCoords({ x: rect.left + 6, y: rect.top + 4 }, false);
-    topLine = ed.view.state.doc.lineAt(pos).number; // 1 始まり
+    topLine = ed.view.state.doc.lineAt(pos).number; // 1-based
   } catch {
     return;
   }
-  const want = topLine - 1; // markdown-it は 0 始まり
+  const want = topLine - 1; // markdown-it is 0-based
   const marks = previewEl.querySelectorAll("[data-src-line]");
   if (!marks.length) return;
   let best = marks[0];
@@ -1068,17 +1122,18 @@ ed.view.scrollDOM.addEventListener("scroll", () => {
   if (!syncRaf) syncRaf = requestAnimationFrame(syncPreviewToEditor);
 });
 
-// --- 起動 -----------------------------------------------------------
+// --- Startup ------------------------------------------------------------------
+applyStaticText();
 if (!bridge.inShell) {
-  addTab({ text: SAMPLE });
+  addTab({ text: tr(SAMPLE_EN, SAMPLE_JA) });
 }
-// 殻内なら bridge.onLoad が最初のタブを作る。
+// Inside the shell, bridge.onLoad creates the first tab.
 
-// --- 殻の自己テスト（CROCO_SELFTEST=1 のときだけ） ----------------------
+// --- Shell self-test (only when CROCO_SELFTEST=1) -------------------------------
 if (bridge.inShell && location.search.indexOf("selftest") >= 0) {
   bridge.diag("selftest: script loaded");
   window.addEventListener("error", (e) => bridge.diag("selftest: window error " + e.message));
-  // 取り込み（.docx 等）は load でなく import で来るので、そちらも観測する。
+  // Imports (.docx etc.) arrive via import, not load, so watch that too.
   bridge.onImport(() => {
     setTimeout(() => {
       const txt = ed.getText();
@@ -1093,23 +1148,23 @@ if (bridge.inShell && location.search.indexOf("selftest") >= 0) {
   bridge.onLoad(() => {
     setTimeout(() => {
       try {
-        // 1) 本文を足して保存（パスのあるタブのときだけ。無題だとダイアログで固まる）
+        // 1) Append text and save (only for a tab with a path; an untitled one would block on the dialog)
         ed.setText(ed.getText() + "\n\nSELFTEST-OK\n", false);
         if (active().path) saveTab(active(), false);
         bridge.diag("selftest: save requested (tabs=" + tabs.length + " path=" + !!active().path + ")");
-        // 2) 2つ目のタブを開く → タグ操作 → 切替往復 → 閉じる
+        // 2) Open a second tab -> tag command -> switch back and forth -> close
         setTimeout(() => {
           const before = tabs.length;
-          addTab({ path: null, crlf: false, text: "二つ目のタブ本文" });
+          addTab({ path: null, crlf: false, text: "SECOND-TAB-TEXT" });
           const id2 = activeId;
-          ed.menu.underline(); // 選択なし → カーソル位置に空 <u></u>
+          ed.menu.underline(); // No selection -> empty <u></u> at the caret
           const hasU = ed.getText().indexOf("<u>") >= 0;
           cycleTab(-1);
           const backToFirst = !!(active().path && active().path.indexOf("ta.md") >= 0);
           const firstTextKept = ed.getText().indexOf("SELFTEST-OK") >= 0;
           switchTab(id2);
-          const secondTextKept = ed.getText().indexOf("二つ目のタブ本文") >= 0;
-          tabs.find((t) => t.id === id2).dirty = false; // 確認ダイアログを避ける（テスト）
+          const secondTextKept = ed.getText().indexOf("SECOND-TAB-TEXT") >= 0;
+          tabs.find((t) => t.id === id2).dirty = false; // Skip the confirmation dialog (test)
           closeTab(id2, true);
           bridge.diag(
             "selftest: tabs " + before + "->" + tabs.length +
@@ -1117,7 +1172,7 @@ if (bridge.inShell && location.search.indexOf("selftest") >= 0) {
             " firstKept=" + firstTextKept + " secondKept=" + secondTextKept +
             " afterClose=" + tabs.length,
           );
-          // 3) メモ広場 表示→非表示 が実際に効くか
+          // 3) Check that showing and hiding the notes panel actually works
           toggleMemo(true);
           const shownVisible = getComputedStyle(memoEl).display !== "none";
           toggleMemo(false);

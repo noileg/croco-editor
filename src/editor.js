@@ -1,12 +1,9 @@
-// 編集ペイン。CodeMirror 6。現行 editor_app.py の tk.Text 相当。
-//  - 字数オーバーの背景ハイライト（analyze().splitIndex 以降）＝現行の "over" タグ
-//  - キー操作・メニュー項目は現行 editor_app.py の割り当てに合わせる。
-//  ※ 現行に無いものは足さない。F5 の日時挿入は現行が意図的に外している
-//    （IME 変換中に F5 が誤発火する既知バグ、editor_app.py の _bind_keys 参照）。
+// Editor pane (CodeMirror 6).
+//  - Highlights text past the character limit (from analyze().splitIndex on)
 //
-// タブは1つの EditorView の state を差し替えて実現する。タブごとに EditorState
-// を丸ごと持たせるので、Undo 履歴・スクロール位置・選択もタブ別になる。
-// 字数上限などタブ別の設定は setActiveSettings で切り替える。
+// Tabs share one EditorView and swap its state. Each tab keeps its own
+// EditorState, so undo history, scroll position and selection are per tab.
+// Per-tab settings such as the character limit are switched with setActiveSettings.
 import { EditorState, Annotation, Compartment } from "@codemirror/state";
 import {
   EditorView,
@@ -50,7 +47,7 @@ import {
 } from "./tags.js";
 import { attachMiddleDragPan } from "./pan.js";
 
-// 現行 editor_app.py の FONT_FAMILIES
+// Font choices offered in the View > Font menu
 export const FONT_FAMILIES = [
   "Yu Gothic UI",
   "Meiryo UI",
@@ -63,30 +60,29 @@ export const FONT_FAMILIES = [
 ];
 const DEFAULT_FONT_PT = 11; // editor_app.py DEFAULT_FONT_SIZE
 
-// .html / .htm は Markdown ではなくHTMLとして編集する（プレビューも描画結果になる。
-// 判定は main.js もこれを使う）。
+// .html / .htm are edited as HTML rather than Markdown (and previewed as rendered HTML).
+// main.js uses the same check.
 export function isHtmlPath(path) {
   return !!path && /\.html?$/i.test(path);
 }
 function languageFor(path) {
-  // 自動閉じタグは切る（打っていないタグが勝手に入ると下書きの邪魔になる）。
-  // Markdown の方は従来どおり色を付けないので、色分けはHTMLのときだけ足す。
+  // Auto-closing tags are off (tags you didn't type would get in the way while drafting).
+  // Markdown stays uncolored as before, so syntax colors are added only for HTML.
   return isHtmlPath(path)
     ? [html({ autoCloseTags: false }), syntaxHighlighting(defaultHighlightStyle, { fallback: true })]
     : markdown();
 }
 
-const refreshAnn = Annotation.define(); // 設定変更でデコレーションだけ作り直す
-const loadAnn = Annotation.define(); // 殻からの全文差し替え（読み込み）を編集と区別する
+const refreshAnn = Annotation.define(); // Rebuild decorations only (settings changed)
+const loadAnn = Annotation.define(); // Tells a whole-text replacement from the shell (a load) apart from an edit
 const OVER = Decoration.mark({ class: "cm-over" });
-// editor_app.py _update_status のタグ表示（utag=タグのグレー表示は本人指摘で
-// 不要と判断済みなので入れない。それ以外の装飾はここで本文上に直接見せる）。
+// Tag decorations shown directly on the text.
 const UNDERLINE = Decoration.mark({ class: "cm-underline" });
 const UNDERLINE2 = Decoration.mark({ class: "cm-underline2" });
 const QBLOCK = Decoration.mark({ class: "cm-qblock" });
 const ESC = Decoration.mark({ class: "cm-esc" });
 
-// --- 見た目の状態（フォント・書体・折り返し）。localStorage に覚える -------
+// --- Appearance (font size, font family, wrapping), remembered in localStorage ---
 function lsGet(k, d) {
   try {
     const v = localStorage.getItem(k);
@@ -102,11 +98,11 @@ function lsSet(k, v) {
 }
 
 export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
-  // タブ別の字数設定。setActiveSettings で切り替える。
+  // Per-tab counting settings, switched with setActiveSettings.
   let current = { limit: 0, stripMarkdown: false, includeWhitespace: true };
 
   const wrapComp = new Compartment();
-  const langComp = new Compartment(); // タブごとの言語（Markdown / HTML）
+  const langComp = new Compartment(); // Per-tab language mode (Markdown / HTML)
   let wrapOn = lsGet("croco.wrap", "1") === "1";
 
   let fontPt = parseInt(lsGet("croco.fontPt", DEFAULT_FONT_PT), 10) || DEFAULT_FONT_PT;
@@ -125,9 +121,8 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
     applyFont();
   }
 
-  // 装飾範囲を1個ずつ ranges へ（from===to の空タグは Decoration.mark が
-  // 例外を出すので除く。書いている途中は普通に通る＝閉じ忘れは末尾までなので
-  // 実質困らない）。
+  // Add each decorated range. Empty tags (from === to) are skipped because
+  // Decoration.mark throws on them; an unclosed tag simply runs to the end.
   function pushSpans(ranges, spans, deco) {
     for (const [from, to] of spans) {
       if (to > from) ranges.push(deco.range(from, to));
@@ -139,7 +134,7 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
     const ranges = [];
     pushSpans(ranges, underlineSpans(text), UNDERLINE);
     pushSpans(ranges, underlineDoubleSpans(text), UNDERLINE2);
-    pushSpans(ranges, ublockSpans(text), UNDERLINE); // <ublock> も下線と同じ見た目
+    pushSpans(ranges, ublockSpans(text), UNDERLINE); // <ublock> looks the same as an underline
     pushSpans(ranges, qblockSpans(text), QBLOCK);
     pushSpans(ranges, escSpans(text), ESC);
     const { splitIndex } = analyze(
@@ -168,10 +163,10 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
     { decorations: (v) => v.decorations },
   );
 
-  // アプリのショートカット（Ctrl+N/O/S/P/M/F/H/G/U/E/ズーム 等）は
-  // editor.js では拾わない。webview の window レベル（main.js）で拾う。
-  // 編集欄・プレビュー欄・メモ欄のどこにフォーカスがあっても効かせるため。
-  // ここに残すのは CodeMirror 既定（Undo・全選択・コピペ・移動）だけ。
+  // App shortcuts (Ctrl+N/O/S/P/M/F/H/G/U/E, zoom, ...) are not handled here but at
+  // window level in main.js, so they work wherever focus is (editor, preview or
+  // notes panel). Only CodeMirror's defaults (undo, select all, copy/paste,
+  // movement) stay here.
 
   const listeners = EditorView.updateListener.of((u) => {
     if (u.docChanged && onChange) {
@@ -210,11 +205,11 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
   applyFont();
   if (onWrap) onWrap(wrapOn);
 
-  // 中ボタンドラッグでスクロール（方向反転・移動量比例・既定7倍）。
-  // キャレット移動も Chromium 標準オートスクロールも起こさない。
+  // Middle-button drag scrolling (inverted, proportional to movement, 7x by default).
+  // It neither moves the caret nor triggers Chromium's built-in autoscroll.
   attachMiddleDragPan(view.scrollDOM);
 
-  // タグ系：本文を丸ごと差し替えて選択を貼り直す（現行と同じやり方）。
+  // Tag commands replace the whole text and then restore the selection.
   function tagCmd(fn) {
     return () => {
       const { from, to } = view.state.selection.main;
@@ -245,7 +240,7 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
     replace: () => openSearchPanel(view),
     gotoLine: () => gotoLine(view),
     insertDateTime: () => {
-      // 現行 editor_app.insert_datetime と同じ書式 "%Y-%m-%d %H:%M"
+      // Format "%Y-%m-%d %H:%M"
       const d = new Date();
       const p = (n) => String(n).padStart(2, "0");
       const s = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
@@ -271,26 +266,27 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
     view,
     menu,
     focus: () => view.focus(),
+    wrapOn: () => wrapOn,
     getText: () => view.state.doc.toString(),
-    // タブ管理用：新しいタブの state を作る／今の state を取り出す／差し替える。
+    // For tab management: create a new tab's state / get the current state / swap it in.
     makeState,
     getState: () => view.state,
     setState: (state) => {
       view.setState(state);
       view.focus();
     },
-    // タブ内で本文だけ差し替える（読み込み時など）。silent=true で onChange 抑止。
+    // Replace only the text within the tab (e.g. on load). silent=true suppresses onChange.
     setText(text, silent = false) {
       view.dispatch({
         changes: { from: 0, to: view.state.doc.length, insert: text },
         annotations: silent ? [loadAnn.of(true)] : [],
       });
     },
-    // 名前を付けて保存で拡張子が変わったときなど、いまのタブの言語を付け替える。
+    // Switch the current tab's language mode, e.g. when Save as changes the extension.
     setLanguage(path) {
       view.dispatch({ effects: langComp.reconfigure(languageFor(path)) });
     },
-    // アクティブなタブの字数設定を反映（上限ハイライトを描き直す）。
+    // Apply the active tab's counting settings (redraws the over-limit highlight).
     setActiveSettings(s) {
       current = { ...current, ...s };
       view.dispatch({ annotations: [refreshAnn.of(true)] });

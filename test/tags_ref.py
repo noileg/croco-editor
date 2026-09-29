@@ -1,5 +1,5 @@
-"""docformats の toggle_underline / toggle_underline_double / toggle_esc /
-bulk_underline で tags_cases.json を評価し JSON を出す。JS 版 tags.js と突き合わせる。
+"""Evaluates tags_cases.json with the Python reference toggle_underline /
+toggle_underline_double / toggle_esc / bulk_underline and prints JSON, for comparison with tags.js.
 
     PYTHONUTF8=1 python tags_ref.py
 """
@@ -10,7 +10,7 @@ from pathlib import Path
 
 _ref = os.environ.get("CROCO_PYREF")
 if not _ref or not Path(_ref).is_dir():
-    sys.exit(1)  # 参照実装が無い → 呼び出し側は SKIP 扱い
+    sys.exit(1)  # No reference: the caller reports SKIP
 sys.path.insert(0, _ref)
 import docformats  # noqa: E402
 

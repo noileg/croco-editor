@@ -1,5 +1,5 @@
-"""参照実装（Python 版 editor_app.analyze）で cases.json を評価して JSON を出す。
-JS 側の出力と突き合わせて、字数カウントが一致しているかを確かめる用。
+"""Evaluates cases.json with the Python reference implementation and prints JSON,
+to check that character counting matches the JS version.
 
     PYTHONUTF8=1 python ref_python.py
 """
@@ -9,10 +9,10 @@ import os
 import sys
 from pathlib import Path
 
-# 旧 Python 版（editor_app.py）のあるフォルダ。環境変数 CROCO_PYREF で渡す。
+# Folder of the Python reference implementation, passed via the CROCO_PYREF environment variable.
 _ref = os.environ.get("CROCO_PYREF")
 if not _ref or not Path(_ref).is_dir():
-    sys.exit(1)  # 参照実装が無い → check.mjs 側はゴールデン（py_out.json）に切替
+    sys.exit(1)  # No reference: check.mjs falls back to the golden py_out.json
 sys.path.insert(0, _ref)
 
 from editor_app import analyze  # noqa: E402

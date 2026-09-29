@@ -1,16 +1,16 @@
-// Markdown プレビュー。markdown-it ＋ 独自記法（<u> / <uu> / <ublock> / <qblock> /
-// <esc>）。現行 editor_app.py の _render_markdown 系に対応するが、表の等幅桁揃えは
-// 踏襲しない（本人判断：現行の表は妥協）。普通の <table> で出す。
+// Markdown preview: markdown-it plus the custom tags (<u> / <uu> / <ublock> /
+// <qblock> / <esc>). Tables render as ordinary <table>s.
 import MarkdownIt from "markdown-it";
+import { tr } from "./i18n.js";
 
-// docformats.py の expand_ublock：<ublock>/</ublock> のタグ文字を <u>/</u> へ
-// 置き換えるだけ。**行数は変えない**（行番号のずれを作らない）。
+// Replace the <ublock>/</ublock> tags with <u>/</u>. The line count stays the same
+// (so line numbers don't shift).
 function expandUblock(text) {
   return text.replace(/<ublock\s*>/gi, "<u>").replace(/<\/ublock\s*>/gi, "</u>");
 }
 
-// docformats.py の expand_qblock：<qblock>…</qblock> の中身の各行頭に "> " を
-// 足す（空行は ">"）。**行数は変えない**。
+// Prefix every line inside <qblock>...</qblock> with "> " (">" for empty lines).
+// The line count stays the same.
 function expandQblock(text) {
   return text.replace(/<qblock\s*>([\s\S]*?)<\/qblock\s*>/gi, (_, inner) =>
     inner
@@ -20,18 +20,17 @@ function expandQblock(text) {
   );
 }
 
-// プレビュー用の <esc> 除去。**行数を保つ**ために中身は消すが改行は残す
-// （editor_app の strip_esc_for_preview の line_map を作る代わりに、行番号が
-// そのまま一致するようにしておく＝スクロール同期がずれない）。
+// Remove <esc> for the preview. The contents are cleared but newlines are kept,
+// so line numbers still match the editor and scroll sync stays aligned.
 function blankEsc(text) {
   let out = text.replace(/<esc\s*>[\s\S]*?<\/esc\s*>/gi, (m) => m.replace(/[^\n]/g, ""));
-  // 閉じ忘れは末尾まで（editor_app の esc_spans と同じ）
+  // An unclosed tag runs to the end
   out = out.replace(/<esc\s*>[\s\S]*$/i, (m) => m.replace(/[^\n]/g, ""));
   return out;
 }
 
-// インラインの <u> </u> <uu> </uu> を html トークンとして通す markdown-it プラグイン。
-// インラインルールなのでコードスパン（`…`）の中では発火しない＝現行と同じ扱い。
+// markdown-it plugin that passes inline <u> </u> <uu> </uu> through as HTML tokens.
+// Being an inline rule, it doesn't fire inside code spans (`...`).
 function underlineTags(md) {
   const MAP = {
     "<u>": "<u>",
@@ -53,8 +52,8 @@ function underlineTags(md) {
   });
 }
 
-// ブロック要素に元の行番号（0 始まり）を data 属性で付ける。
-// エディタ↔プレビューのスクロール同期に使う（現行の line_map 相当）。
+// Tag top-level block elements with their source line (0-based) as a data attribute,
+// used for editor <-> preview scroll sync.
 function sourceLine(md) {
   md.core.ruler.push("source_line", (state) => {
     for (const token of state.tokens) {
@@ -66,7 +65,7 @@ function sourceLine(md) {
 }
 
 const md = new MarkdownIt({
-  html: false, // 生 HTML は通さない。必要なタグだけ上のプラグインで通す
+  html: false, // No raw HTML; only the tags above get through, via the plugin
   linkify: false,
   breaks: false,
   typographer: false,
@@ -74,14 +73,14 @@ const md = new MarkdownIt({
 md.use(underlineTags);
 md.use(sourceLine);
 
-// 画像は読み込まず [画像: alt] のプレースホルダにする（現行 parse_inline と同じ）。
+// Images are not loaded; they show as an [image: alt] placeholder.
 md.renderer.rules.image = (tokens, idx) => {
   const alt = tokens[idx].content || "";
-  return `<span class="img-ph">[画像: ${md.utils.escapeHtml(alt)}]</span>`;
+  return `<span class="img-ph">${tr("[image: ", "[画像: ")}${md.utils.escapeHtml(alt)}]</span>`;
 };
 
 export function renderMarkdown(text) {
-  let src = blankEsc(text); // <esc>…</esc> は出さない（行数は保つ）
+  let src = blankEsc(text); // Hide <esc>...</esc> (line count kept)
   src = expandUblock(src);
   src = expandQblock(src);
   return md.render(src);

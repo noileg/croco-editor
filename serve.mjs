@@ -1,6 +1,6 @@
-// dist/ を配る使い捨ての静的サーバ（標準ライブラリのみ）。動作確認用。
-//   node serve.mjs [ポート]
-// file:// でも開けるが、将来 fetch を足したときのために http で見られるようにする。
+// A throwaway static server for dist/ (standard library only), for trying things out.
+//   node serve.mjs [port]
+// dist/ also opens via file://, but http leaves room for adding fetch later.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -34,5 +34,5 @@ createServer(async (req, res) => {
     res.writeHead(404).end("not found");
   }
 }).listen(port, "127.0.0.1", () => {
-  console.log(`http://127.0.0.1:${port}/  (Ctrl+C で停止)`);
+  console.log(`http://127.0.0.1:${port}/  (Ctrl+C to stop)`);
 });

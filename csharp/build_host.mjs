@@ -1,10 +1,10 @@
-// C# 殻を Windows 同梱の csc.exe でビルドする（.NET SDK 不要）。
+// Builds the C# shell with the csc.exe that ships with Windows (no .NET SDK needed).
 //   node csharp/build_host.mjs
-// 出力は csharp/out/（croco-editor.exe ＋ WebView2 の DLL 3個 ＋ dist/）。
+// Output goes to csharp/out/ (croco-editor.exe + the 3 WebView2 DLLs + dist/).
 //
-// フロント（dist/bundle.js）はリポジトリにコミットしてあるので、clone 直後に
-// npm install 無しでもこのスクリプトは通る（システムの csc だけあればよい）。
-// node_modules があるときはフロントもバンドルし直してから複製する。
+// The front end (dist/bundle.js) is committed, so right after a clone this script works
+// without npm install (only the system csc is needed). If node_modules exists, the
+// front end is rebundled first.
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -16,11 +16,11 @@ const vendor = join(here, "vendor");
 const repo = join(here, "..");
 const dist = join(repo, "dist");
 
-// node_modules があればフロントを最新化。無ければコミット済みの dist/ を使う。
+// Rebuild the front end if node_modules exists; otherwise use the committed dist/.
 if (existsSync(join(repo, "node_modules"))) {
   execFileSync(process.execPath, [join(repo, "build.mjs")], { stdio: "inherit" });
 } else {
-  console.log("node_modules 無し → コミット済みの dist/ をそのまま使う");
+  console.log("no node_modules: using the committed dist/ as is");
 }
 
 const csc = [
@@ -28,15 +28,15 @@ const csc = [
   "C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe",
 ].find(existsSync);
 if (!csc) {
-  console.error("csc.exe が見つからない（C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\）");
+  console.error("csc.exe not found (C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\)");
   process.exit(1);
 }
 if (!existsSync(join(dist, "index.html")) || !existsSync(join(dist, "bundle.js"))) {
-  console.error("dist/ が無い。npm install 後に `node build.mjs` を実行すること");
+  console.error("dist/ is missing. Run `node build.mjs` after npm install");
   process.exit(1);
 }
 
-// out/ は消さずに上書き（croco-editor.exe 実行中でも csc の /out 以外は通る）。
+// Overwrite out/ instead of deleting it (so only csc's /out fails while croco-editor.exe is running).
 mkdirSync(out, { recursive: true });
 
 const icon = join(here, "editor.ico");
@@ -73,4 +73,4 @@ for (const dll of [
 if (existsSync(icon)) cpSync(icon, join(out, "editor.ico"));
 cpSync(dist, join(out, "dist"), { recursive: true });
 
-console.log("csharp/out/croco-editor.exe をビルドしました");
+console.log("built csharp/out/croco-editor.exe");

@@ -1,30 +1,23 @@
-// croco-editor の C# 殻。WinForms のウィンドウが WebView2 コントロールを
-// 1個持ち、dist/ のフロント（CodeMirror + プレビュー）を表示する。
-// ファイル入出力・ダイアログ・タイトルはこちら、編集と字数計算は webview 側。
+// croco-editor's C# shell. A WinForms window hosts one WebView2 control that
+// shows the front end in dist/ (CodeMirror + preview). File I/O, dialogs and
+// the window title live here; editing and character counting live in the webview.
 //
-// ビルド: build.cmd（Windows 同梱の csc.exe。.NET SDK 不要）。
+// Build: node csharp/build_host.mjs (uses the csc.exe that ships with Windows;
+// no .NET SDK needed).
 //
-// JS ⇔ 殻 の文字列プロトコルは bridge.js の冒頭にまとめてある。
+// The string protocol between JS and the shell is documented at the top of bridge.js.
 //
-// 単一インスタンス：2枚目以降の起動は、開こうとしたファイルのパスを
-// 既存インスタンスの「本物のウィンドウ」（MainForm）へ WM_COPYDATA で渡し、
-// 自分は終了する。最初のインスタンスはそれを新しいタブとして開き、
-// ウィンドウを前面に出す。`--new` を付けて起動した窓はこの仕組みに
-// 参加しない（常に独立。現行 editor_app の「使い捨て窓」）。
+// Single instance: a second launch hands the path it was asked to open to the
+// existing instance's main window (MainForm) via WM_COPYDATA and exits. The first
+// instance opens it in a new tab and brings its window to the front. Windows
+// started with `--new` do not take part and are always independent.
 //
-// 名前付きパイプ＋別窓ではなくこの方式にした理由（2026-09-11、本人との検討）：
-// Chromium/Electron・Notepad++ 等が実際に使っている定番（ウィンドウ宛の
-// WM_COPYDATA。SendMessage は配送を同期確認できる）に、本人の指摘
-// 「そもそも窓だけ最初に開いとけばいい」を足した形。受け渡し専用の別窓は
-// 作らない。MainForm 自身のハンドルが生成された瞬間（Application.Run の
-// 最初期＝WebView2初期化よりずっと前）に自分へ目印（SetProp）を立てる
-// （MainForm.OnHandleCreated → Program.MarkAsMainWindow）。敗者側は
-// EnumWindows でその目印を探す（FindMainWindow）。パイプサーバのスレッド
-// 寿命・インスタンス数上限まわりで起きていた「渡したのに消える」不具合の
-// 芽がそもそも無い。「勝者はいるが目印がまだ無い」隙間は数十ms程度に縮む。
-// それでも間に合わなかった場合は敗者側が数秒だけ探しにいき（待ちは
-// ここだけ）、見つからなければパスを捨てずに自分の窓を単独で開く
-// （単一インスタンス不参加へフォールバック）。
+// MainForm marks itself (SetProp) as soon as its handle is created, early in
+// Application.Run and well before WebView2 initializes (OnHandleCreated ->
+// Program.MarkAsMainWindow). A later instance finds that mark with EnumWindows
+// (FindMainWindow). If the mark is not there yet it keeps looking for a few
+// seconds, and if it still finds nothing it opens its own window instead of
+// dropping the path.
 
 using System;
 using System.IO;
@@ -50,6 +43,40 @@ static class Log
     }
 }
 
+// UI language. Stored as "en" or "ja" in HKCU\Software\croco-editor\Language,
+// written by the installer or by the View > Language menu. Defaults to English.
+static class L
+{
+    const string Key = @"Software\croco-editor";
+    public static string Lang = "en";
+
+    public static void Load()
+    {
+        try
+        {
+            using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(Key))
+            {
+                var v = k == null ? null : k.GetValue("Language") as string;
+                Lang = v == "ja" ? "ja" : "en";
+            }
+        }
+        catch { Lang = "en"; }
+    }
+
+    public static void Save(string lang)
+    {
+        Lang = lang == "ja" ? "ja" : "en";
+        try
+        {
+            using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(Key))
+                k.SetValue("Language", Lang);
+        }
+        catch (Exception ex) { Log.W("L.Save: " + ex.Message); }
+    }
+
+    public static string T(string en, string ja) { return Lang == "ja" ? ja : en; }
+}
+
 [StructLayout(LayoutKind.Sequential)]
 struct COPYDATASTRUCT
 {
@@ -63,9 +90,7 @@ static class Program
     const string MutexName = @"Local\croco-editor-singleton";
     const string MainWindowProp = "CrocoEditorMainWindow";
     internal const int WM_COPYDATA = 0x004A;
-    // editor_app.py APP_ID と同じ役割（タスクバーのアプリ識別・ジャンプリストの
-    // 紐付け先）。旧版と同一文字列にする理由は無い（別アプリとして扱われて
-    // よい）ので croco-editor 用に新規に決める。
+    // AppUserModelID: groups the taskbar buttons and ties the jump list to this app.
     internal const string AppId = "croco.editor";
     static Mutex mutex;
 
@@ -89,10 +114,10 @@ static class Program
     [STAThread]
     static void Main()
     {
-        // editor_app.py _claim_app_identity と同じ理由・同じ位置（窓を作る前）。
-        // 呼ばないとタスクバーのアイコン/グループ化が既定のものになり、
-        // ジャンプリスト（タスクバー右クリックのタスク）も出ない。
+        // Must be set before any window is created. Without it the taskbar uses the
+        // default icon and grouping, and the jump list does not appear.
         try { SetCurrentProcessExplicitAppUserModelID(AppId); } catch { }
+        L.Load();
 
         var args = Environment.GetCommandLineArgs();
         bool newWindow = args.Contains("--new");
@@ -102,13 +127,12 @@ static class Program
             if (a != "--new" && !string.IsNullOrWhiteSpace(a)) { path = a; break; }
         }
 
-        // 参照物（.json / .tasks / README.md）はメイン窓のタブに混ぜず、独立した
-        // 窓で開く（現行 editor_app.wants_own_window）。＝ --new 扱いにする。
+        // Reference files (.json / .tasks / README.md) open in their own window
+        // rather than as a tab in the main window, i.e. as if --new were given.
         if (WantsOwnWindow(path)) newWindow = true;
 
-        // タスクバー右クリックの「新しいウィンドウ」の登録要否（旧版 launcher.cs
-        // と同じ条件＝ --new 自身では不要）。実際の登録は MainForm 生成後、
-        // ウィンドウが動き出してから行う（下の Application.Run のコメント参照）。
+        // Register the taskbar "New window" task unless this is a --new window. The
+        // actual registration happens once the window is up (see below).
         bool wantsJumpList = !args.Contains("--new");
 
         if (!newWindow)
@@ -117,9 +141,9 @@ static class Program
             mutex = new Mutex(true, MutexName, out isFirst);
             if (!isFirst)
             {
-                if (TryHandoff(path)) return; // 既存の窓へ渡せた。ここで終了。
-                // 数秒探しても見つからなかった／勝者が消えていた。
-                // パスは捨てず、このプロセスが単独で窓を開く（単一インスタンス不参加）。
+                if (TryHandoff(path)) return; // Handed off to the existing window.
+                // No window found within a few seconds, or the first instance is gone.
+                // Keep the path and open a standalone window instead.
                 newWindow = true;
             }
         }
@@ -129,15 +153,13 @@ static class Program
 
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
-        // MainForm 自身が受け口を兼ねる（別窓は作らない）。ハンドル生成時に
-        // 自分で目印を立てる（OnHandleCreated → MarkAsMainWindow）。生成は
-        // Application.Run が最初にやることの一つで、WebView2 の初期化より
-        // ずっと前に終わる。「勝者はいるが受け口がまだ無い」隙間はここに収まる。
+        // MainForm doubles as the handoff target (no separate window). It marks
+        // itself when its handle is created (OnHandleCreated -> MarkAsMainWindow),
+        // one of the first things Application.Run does, long before WebView2
+        // initializes.
         //
-        // ジャンプリスト登録（COM、ショートカットのファイルI/O込みでミリ秒
-        // オーダーかかる）はここより前段（Mutex判定やハンドオフ）でやると、
-        // その隙間をまた広げてしまう（2026-09-11、レビューで発覚：単一インスタンス
-        // 修正の趣旨と矛盾していた）。ウィンドウ生成後に MainForm 側で遅延実行する。
+        // Jump list registration (COM plus shortcut file I/O, a few ms) is deferred
+        // until the window exists so it does not delay that mark.
         var form = new MainForm(path, participateSession: !newWindow, wantsJumpList: wantsJumpList);
         Application.Run(form);
         GC.KeepAlive(mutex);
@@ -153,9 +175,8 @@ static class Program
         return false;
     }
 
-    // MainForm.OnHandleCreated から呼ばれる。自分のウィンドウに目印を立てる
-    // だけ（SetProp はウィンドウのプロパティリストに1エントリ足すだけで、
-    // 別ウィンドウを作るより軽い）。
+    // Called from MainForm.OnHandleCreated. Just marks our window (SetProp adds
+    // one entry to the window's property list).
     internal static void MarkAsMainWindow(IntPtr hwnd)
     {
         SetProp(hwnd, MainWindowProp, new IntPtr(1));
@@ -172,9 +193,10 @@ static class Program
         return found;
     }
 
-    // 敗者側。勝者の窓を最大5秒探し、見つかり次第 WM_COPYDATA で渡す。
-    // 通常系（既に窓がある）は1回目の EnumWindows で即見つかるので待たない。
-    // 待つのは「Mutex は取られたが窓の目印がまだ無い」冷間バーストの隙間だけ。
+    // Later instance: look for the main window for up to 5 seconds and send the
+    // path with WM_COPYDATA. Normally the window already exists and is found on
+    // the first try; the wait only covers a cold start where the mutex is taken
+    // but the window is not marked yet.
     static bool TryHandoff(string path)
     {
         var deadline = DateTime.UtcNow.AddSeconds(5);
@@ -183,8 +205,8 @@ static class Program
         {
             hwnd = FindMainWindow();
             if (hwnd != IntPtr.Zero) break;
-            if (!WinnerAlive()) { Log.W("handoff 断念: 勝者が見当たらない"); return false; }
-            if (DateTime.UtcNow > deadline) { Log.W("handoff 断念: 窓が見つからず"); return false; }
+            if (!WinnerAlive()) { Log.W("handoff aborted: first instance is gone"); return false; }
+            if (DateTime.UtcNow > deadline) { Log.W("handoff aborted: window not found"); return false; }
             Thread.Sleep(50);
         }
 
@@ -194,43 +216,41 @@ static class Program
         {
             var cds = new COPYDATASTRUCT();
             cds.dwData = IntPtr.Zero;
-            cds.cbData = (p.Length + 1) * 2; // UTF-16 + 終端null
+            cds.cbData = (p.Length + 1) * 2; // UTF-16 + terminating null
             cds.lpData = buf;
             SendMessage(hwnd, WM_COPYDATA, IntPtr.Zero, ref cds);
             return true;
         }
-        catch (Exception ex) { Log.W("handoff 送信失敗: " + ex.Message); return false; }
+        catch (Exception ex) { Log.W("handoff send failed: " + ex.Message); return false; }
         finally { Marshal.FreeHGlobal(buf); }
     }
 
-    // Main 開始前（Log.Reset 前）に呼ばれ得るのでログに頼らず判定する。
+    // May be called before Log.Reset in Main, so it does not rely on the log.
     static bool WinnerAlive()
     {
         try { using (Mutex.OpenExisting(MutexName)) return true; }
         catch (WaitHandleCannotBeOpenedException) { return false; }
-        catch (UnauthorizedAccessException) { return true; } // 存在はする
+        catch (UnauthorizedAccessException) { return true; } // It exists.
     }
 }
 
-// --- タスクバーのジャンプリスト（「新しいウィンドウ」タスク）-----------------
+// --- Taskbar jump list ("New window" task) -----------------------------------
 //
-// 旧版 launcher.cs の JumpList をそのまま移植（COM=ICustomDestinationList
-// 以外に方法が無い点も同じ）。croco-editor は launcher.csと違って本体exeが
-// そのままショートカット先になる（別exeへ委譲しない）。2026-09-11、
-// 実装漏れとして本人指摘。
+// Uses ICustomDestinationList (COM); there is no managed API for this. The
+// shortcut points directly at croco-editor.exe.
 static class JumpList
 {
     const string LinkName = "croco-editor.lnk";
 
-    // 通常起動のたびに呼ぶ。失敗しても黙って続ける。
+    // Called on every normal launch. Failures are ignored.
     public static void TryRegister(string exePath)
     {
         try { EnsureShortcut(exePath); } catch { }
         try { CommitTasks(exePath); } catch { }
     }
 
-    // ジャンプリストは AppUserModelID を持つショートカットがどこかに無いと
-    // Windows が表示しない。スタートメニューに1つ置く。
+    // Windows only shows a jump list if a shortcut with the AppUserModelID exists
+    // somewhere, so put one in the Start menu.
     static void EnsureShortcut(string exePath, bool force = false)
     {
         string dir = Environment.GetFolderPath(Environment.SpecialFolder.Programs);
@@ -263,9 +283,9 @@ static class JumpList
         link.SetPath(exePath);
         link.SetArguments("--new");
         link.SetIconLocation(exePath, 0);
-        link.SetDescription("新しいウィンドウを開く");
+        link.SetDescription(L.T("Open a new window", "新しいウィンドウを開く"));
         IPropertyStore store = (IPropertyStore)link;
-        SetString(store, PkeyTitle, "新しいウィンドウ");
+        SetString(store, PkeyTitle, L.T("New window", "新しいウィンドウ"));
         store.Commit();
 
         IObjectCollection tasks = (IObjectCollection)new CEnumerableObjectCollection();
@@ -285,7 +305,7 @@ static class JumpList
 
     static void Check(int hr, string where)
     {
-        if (hr < 0) throw new COMException(where + " が失敗 (HRESULT 0x"
+        if (hr < 0) throw new COMException(where + " failed (HRESULT 0x"
                                            + hr.ToString("x8") + ")", hr);
     }
 
@@ -435,32 +455,32 @@ struct PropVariant
 sealed class MainForm : Form
 {
     readonly WebView2 web = new WebView2();
-    string currentPath;   // 起動時に argv で渡されたファイル（初期タイトル用）
-    // HTML タブのプレビュー（iframe）が相対パスの画像・CSS を読むための仮想ホスト
-    // doc.local が指しているフォルダ。アクティブな HTML タブが変わるたびに JS が知らせてくる。
+    string currentPath;   // File given on the command line (used for the initial title)
+    // Folder that the virtual host doc.local points to, so the HTML preview (iframe)
+    // can load relative images and CSS. JS updates it when the active HTML tab changes.
     string docBaseDir;
     bool navigated;
-    ToolStripMenuItem miPreview;   // 表示 › プレビュー（チェック）
-    ToolStripMenuItem miEditor;    // 表示 › エディタ（チェック。タブごとの状態を JS が知らせる）
-    ToolStripMenuItem miWrap;      // 表示 › 右端で折り返す（チェック）
-    ToolStripMenuItem miMemo;      // 表示 › メモ広場 › 表示する（チェック）
-    ToolStripMenuItem miMemoEdit;  // 表示 › メモ広場 › 編集する（チェック）
-    bool anyDirty;                 // どれかのタブが未保存か（JS から通知）
-    bool closingConfirmed;         // 閉じる確認で「いいえ」を押した
-    string lastSessionJson = "";   // JS から届く最新のセッション状態（殻は中身を見ない）
-    string restoreJson;            // 起動時に読み込んだ前回のセッション（JS へ渡す）
+    ToolStripMenuItem miPreview;   // View > Show preview (checked)
+    ToolStripMenuItem miEditor;    // View > Show editor (checked; per tab, reported by JS)
+    ToolStripMenuItem miWrap;      // View > Word wrap (checked)
+    ToolStripMenuItem miMemo;      // View > Notes > Show (checked)
+    ToolStripMenuItem miMemoEdit;  // View > Notes > Edit (checked)
+    bool anyDirty;                 // Whether any tab has unsaved changes (reported by JS)
+    bool closingConfirmed;         // "No" was chosen in the close confirmation
+    string lastSessionJson = "";   // Latest session state from JS (opaque to the shell)
+    string restoreJson;            // Previous session read at startup (passed to JS)
     bool selfTest;
-    readonly bool participatesSingleInstance; // 単一インスタンスの受け口を名乗るか（＝使い捨て窓でない）
-    System.Windows.Forms.Timer sessionSaveTimer; // editor_app.py _schedule_save 相当（1500ms debounce）
-    // 最後に自分が読み書きした時点の各ファイルの更新日時。外部変更の検知に使う
-    // （editor_app.py Doc.mtime 相当）。キーは Path.GetFullPath 済みの絶対パス。
+    readonly bool participatesSingleInstance; // Accepts handoffs (i.e. not a --new window)
+    System.Windows.Forms.Timer sessionSaveTimer; // Debounces session saves (1500 ms)
+    // Last-modified time of each file as of our last read or write, used to detect
+    // external changes. Keys are full paths (Path.GetFullPath).
     readonly System.Collections.Generic.Dictionary<string, DateTime> knownMtime =
         new System.Collections.Generic.Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
-    // --- メモ広場（claude_notes 連携） -----------------------------------
-    // ノートの置き場所。外から書く CLI（claude_notes.mjs）と同じ場所を指す必要が
-    // ある。既定は %APPDATA%\croco-editor\claude_notes、環境変数 CROCO_NOTE_DIR で
-    // 上書き可。パスの計算（sha1 先頭16桁）は claude_notes.mjs の note_path と一致。
+    // --- Notes panel (claude_notes) ------------------------------------------
+    // Where notes live. Must match the CLI that writes them (claude_notes.mjs).
+    // Defaults to %APPDATA%\croco-editor\claude_notes; override with CROCO_NOTE_DIR.
+    // File names (first 16 hex digits of SHA-1) match note_path in claude_notes.mjs.
     static readonly string NoteDir =
         Environment.GetEnvironmentVariable("CROCO_NOTE_DIR")
         ?? Path.Combine(
@@ -468,12 +488,12 @@ sealed class MainForm : Form
             "croco-editor", "claude_notes");
     string memoDraftPath, memoOverride, memoNotePath;
     bool memoVisible, memoEditable;
-    bool activeDirty; // memoDraftPath＝アクティブなタブの下書きが未編集か
+    bool activeDirty; // Whether the active tab's draft (memoDraftPath) has unsaved edits
     DateTime? memoMtime;
     System.Windows.Forms.Timer memoTimer;
-    System.Windows.Forms.Timer docWatchTimer; // アクティブな下書き本体の外部変更監視
+    System.Windows.Forms.Timer docWatchTimer; // Watches the active draft for external changes
     readonly System.Collections.Generic.List<string> pendingHandoff =
-        new System.Collections.Generic.List<string>(); // webview 準備前に来た受け渡し
+        new System.Collections.Generic.List<string>(); // Handoffs that arrived before the webview was ready
 
     static string SessionPath
     {
@@ -485,16 +505,12 @@ sealed class MainForm : Form
         }
     }
 
-    // knownMtime の永続化先。editor_app.py は Doc.mtime を session.json に
-    // 一緒に持たせて越境させているが、殻は session の JSON を解釈しない設計
-    // なので別ファイルに分けて自前管理する（形式もJSONにしない）。
-    // 1行 = "<mtime を UTC ticks で>\t<絶対パス>"。
+    // Where knownMtime is persisted. The shell does not parse the session JSON, so
+    // this is a separate file with one line per file: "<mtime as UTC ticks>\t<full path>".
     //
-    // **これが無いと**：タブを閉じずにアプリだけ再起動したとき、復元された
-    // タブは knownMtime に基準が無いまま復活し、次の自動保存で外部変更の
-    // 検知（DoSave の conflict チェック）が素通りしてしまう＝アプリを閉じて
-    // いた間に外部で書き換わった内容を無条件に上書きして消しかねない。
-    // 2026-09-11、本人指摘で発覚。
+    // Without it, tabs restored after a restart would have no baseline, and the
+    // next autosave would skip the external-change check and could overwrite
+    // changes made while the app was closed.
     static string MtimeCachePath
     {
         get
@@ -560,22 +576,19 @@ sealed class MainForm : Form
 
         web.Dock = DockStyle.Fill;
         Controls.Add(web);
-        Controls.Add(BuildMenu()); // web を先に足してからメニューを上に載せる
+        Controls.Add(BuildMenu()); // Add web first, then the menu so it docks on top
         InitAsync();
     }
 
-    // ハンドル生成はここが最初（Application.Run の最初期。WebView2初期化より
-    // ずっと前）。単一インスタンスの受け口として名乗るのはこの一瞬でいい。
+    // The handle is created here, early in Application.Run and well before WebView2
+    // initializes. This is where we mark ourselves as the handoff target.
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
         if (participatesSingleInstance) Program.MarkAsMainWindow(Handle);
 
-        // ジャンプリスト登録（COM＋ファイルI/O）はここでは呼ばない＝
-        // BeginInvoke でメッセージループに1回回してから（＝ウィンドウが
-        // 実際に表示され始めてから）動かす。単一インスタンスの受け口に
-        // なる／敗者からの WM_COPYDATA を受けられるようになるタイミングを
-        // 遅らせないため（2026-09-11、レビューで発覚）。
+        // Jump list registration (COM + file I/O) is deferred with BeginInvoke until
+        // the message loop runs, so it does not delay accepting handoffs.
         if (wantsJumpList)
         {
             BeginInvoke((Action)(() =>
@@ -586,8 +599,8 @@ sealed class MainForm : Form
         }
     }
 
-    // 別インスタンスからの WM_COPYDATA。自分のメッセージループの中＝
-    // 既に UI スレッドなので BeginInvoke は要らない。
+    // WM_COPYDATA from another instance. We are already on the UI thread (our own
+    // message loop), so no BeginInvoke is needed.
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == Program.WM_COPYDATA)
@@ -601,7 +614,7 @@ sealed class MainForm : Form
         base.WndProc(ref m);
     }
 
-    // session.dat = 1行目 "x,y,w,h,max"、2行目以降が JS の JSON（殻は解釈しない）。
+    // session.dat: first line "x,y,w,h,max", the rest is JSON from JS (opaque to the shell).
     void LoadSession()
     {
         try
@@ -618,7 +631,7 @@ sealed class MainForm : Form
                 int x = int.Parse(p[0]), y = int.Parse(p[1]), w = int.Parse(p[2]), h = int.Parse(p[3]);
                 var vs = SystemInformation.VirtualScreen;
                 var r = new System.Drawing.Rectangle(x, y, Math.Max(400, w), Math.Max(300, h));
-                if (r.IntersectsWith(vs)) // 画面外に復元しない
+                if (r.IntersectsWith(vs)) // Don't restore off-screen
                 {
                     StartPosition = FormStartPosition.Manual;
                     Bounds = r;
@@ -631,11 +644,9 @@ sealed class MainForm : Form
 
     void SaveSession()
     {
-        // mtime基準を先に永続化してからタブ構成を保存する。逆順だと、両方の
-        // 書き込みの間に落ちた場合に「タブは復元されるが基準が無い」
-        // （＝競合検知が素通りする、2026-09-11に見つけた欠陥と同じ状態）が
-        // 一瞬でも起きうる。この順なら万一そこで落ちても「基準はあるがタブが
-        // 復元されない」で止まるだけ＝データは消えない。
+        // Save the mtime baselines before the tab layout. If we crash between the two
+        // writes, the worst case is baselines without restored tabs, never restored
+        // tabs without baselines (which would skip the external-change check).
         SaveKnownMtime();
         try
         {
@@ -648,10 +659,9 @@ sealed class MainForm : Form
         catch (Exception ex) { Log.W("SaveSession: " + ex.Message); }
     }
 
-    // editor_app.py _schedule_save 相当。「閉じる時だけ保存だとクラッシュ／
-    // PCの強制終了で丸ごと消える」ため、session メッセージが来るたびに
-    // 1500ms後（旧版と同じ間隔）のディスク書き込みを予約し直す。使い捨て窓
-    // （--new。editor_app.py の ephemeral）は前回の続きを上書きしないので対象外。
+    // Saving only on close would lose everything on a crash or forced shutdown, so
+    // every session message reschedules a disk write 1500 ms later. --new windows
+    // are skipped so they don't overwrite the main session.
     void ScheduleSessionSave()
     {
         if (!participatesSingleInstance || selfTest) return;
@@ -665,9 +675,9 @@ sealed class MainForm : Form
         sessionSaveTimer.Start();
     }
 
-    // --- メモ広場 ---------------------------------------------------------
-    // claude_notes.note_path_for と同じ計算：下書きの絶対パスを posix 表記に
-    // 直し casefold（ここでは ToLowerInvariant）して SHA1、先頭16桁 + ".md"。
+    // --- Notes panel ---------------------------------------------------------
+    // Same as claude_notes' note_path_for: the draft's full path with forward
+    // slashes, lowercased, SHA-1, first 16 hex digits + ".md".
     static string NotePathFor(string draftPath)
     {
         string posix = Path.GetFullPath(draftPath).Replace('\\', '/');
@@ -676,14 +686,14 @@ sealed class MainForm : Form
         {
             byte[] h = sha.ComputeHash(Encoding.UTF8.GetBytes(key));
             var sb = new StringBuilder();
-            for (int i = 0; i < 8; i++) sb.Append(h[i].ToString("x2")); // 16 hex 桁
+            for (int i = 0; i < 8; i++) sb.Append(h[i].ToString("x2")); // 16 hex digits
             return Path.Combine(NoteDir, sb.ToString() + ".md");
         }
     }
 
-    // memo-watch\n<下書きパス>\n<手動指定パス>\n<表示 0|1>\n<編集 0|1>\n<dirty 0|1>
-    // 最後の <dirty> は下書き本体（memoDraftPath）＝アクティブなタブの話で、
-    // メモ自体の編集モード（<編集>）とは別物。DocWatchTick が使う。
+    // memo-watch\n<draft path>\n<manual note path>\n<visible 0|1>\n<editable 0|1>\n<dirty 0|1>
+    // <dirty> refers to the draft itself (the active tab), not the note's edit mode.
+    // DocWatchTick uses it.
     void ConfigureMemo(string[] p)
     {
         memoDraftPath = p.Length > 0 && p[0].Length > 0 ? p[0] : null;
@@ -702,17 +712,14 @@ sealed class MainForm : Form
         if (memoTimer == null)
         {
             memoTimer = new System.Windows.Forms.Timer();
-            memoTimer.Interval = 1000; // 現行と同じ 1 秒ポーリング
+            memoTimer.Interval = 1000; // Poll once a second
             memoTimer.Tick += (s, e) => MemoTick();
         }
         memoTimer.Enabled = memoVisible && !memoEditable && memoNotePath != null;
 
-        // アクティブなタブの下書き本体の外部変更監視。メモ広場の表示可否とは
-        // 無関係に常時（未編集の間だけ）見る。editor_app.py _autosave_files の
-        // 「dirtyでなければ黙って読み直す」半分（2026-09-11、本人の実地報告で
-        // 発覚：croco-editorで開きっぱなしのファイルを外部エディタで書き換えても
-        // 古い内容のまま固まっていた。よそのテキストエディタで開くと最新が出る
-        // のに、自作の方だけ追従しないのはおかしい、との指摘）。
+        // Watch the active draft for external changes whether or not the notes panel
+        // is shown. While the tab has no unsaved edits, it is reloaded silently when
+        // the file changes on disk.
         if (docWatchTimer == null)
         {
             docWatchTimer = new System.Windows.Forms.Timer();
@@ -747,7 +754,7 @@ sealed class MainForm : Form
         DateTime known;
         if (!knownMtime.TryGetValue(full, out known))
         {
-            // 基準が無ければここで確立するだけ（まだ「変わった」とは言えない）。
+            // No baseline yet: just record one (we can't tell whether it changed).
             RememberMtime(full);
             return;
         }
@@ -758,7 +765,7 @@ sealed class MainForm : Form
         catch (Exception ex) { Log.W("DocWatchTick read: " + ex.Message); return; }
         RememberMtime(full);
         string crlf = fresh.Contains("\r\n") ? "1" : "0";
-        Log.W("外部変更を検知し追従: " + full);
+        Log.W("external change detected, reloading: " + full);
         Post("externalUpdate\n" + full + "\n" + crlf + "\n" + fresh.Replace("\r\n", "\n"));
     }
 
@@ -766,7 +773,7 @@ sealed class MainForm : Form
     {
         if (memoNotePath == null)
         {
-            Post("memo\nnone\n（保存された下書きにのみメモ広場が使えます）");
+            Post("memo\nnone\n" + L.T("(The notes panel is available only for saved drafts)", "（保存された下書きにのみメモ広場が使えます）"));
             return;
         }
         string content = "";
@@ -796,21 +803,21 @@ sealed class MainForm : Form
         catch (Exception ex) { Log.W("SaveMemo: " + ex.Message); }
     }
 
-    // メニュー「メモ広場 › ファイルを選択...」
+    // Menu: Notes > Choose file...
     void PickMemoFile()
     {
         using (var dlg = new OpenFileDialog())
         {
-            dlg.Filter = "Markdown / テキスト|*.md;*.txt|すべてのファイル|*.*";
+            dlg.Filter = L.T("Markdown / Text|*.md;*.txt|All files|*.*", "Markdown / テキスト|*.md;*.txt|すべてのファイル|*.*");
             if (Directory.Exists(NoteDir)) dlg.InitialDirectory = NoteDir;
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
-            Post("menu\nmemo-file\n" + dlg.FileName); // JS が override として持ち再 watch
+            Post("menu\nmemo-file\n" + dlg.FileName); // JS keeps it as an override and re-watches
         }
     }
 
-    // メニュー項目。**ショートカットキーは Form/menu に持たせない。**
-    // すべて webview 側の window レベル keydown で拾う（編集欄・プレビュー欄・
-    // メモ欄のどこにフォーカスがあっても効くように。本人指摘）。ここは表示だけ。
+    // Menu item. Shortcut keys are not bound on the form or the menu; the webview
+    // handles them at window level so they work wherever focus is (editor,
+    // preview or notes panel). The key text here is display only.
     ToolStripMenuItem MkMenu(string text, string keyHint, string cmd)
     {
         var it = new ToolStripMenuItem(text);
@@ -819,7 +826,7 @@ sealed class MainForm : Form
         return it;
     }
 
-    // 殻側で処理する項目（開く・新しいウィンドウ・形式変換・終了など）。
+    // Items handled by the shell (open, new window, export, exit, ...).
     ToolStripMenuItem MkHost(string text, string keyHint, string cmd)
     {
         var it = new ToolStripMenuItem(text);
@@ -834,16 +841,16 @@ sealed class MainForm : Form
         else if (cmd == "quit") Close();
         else if (cmd == "new-window") NewWindow();
         else if (cmd == "close-window") Close();
-        else if (cmd == "close-tab") Post("menu\nclose-tab"); // タブ操作は JS 側
+        else if (cmd == "close-tab") Post("menu\nclose-tab"); // Tab operations live in JS
         else if (cmd == "export") ExportDialog();
         else if (cmd.StartsWith("open-path\n")) OpenAsTab(cmd.Substring("open-path\n".Length));
         else if (cmd.StartsWith("import-failed\n"))
-            MessageBox.Show(this, cmd.Substring("import-failed\n".Length), "変換に失敗");
+            MessageBox.Show(this, cmd.Substring("import-failed\n".Length), L.T("Conversion failed", "変換に失敗"));
         else Post("menu\n" + cmd);
     }
 
-    // 外部 URL は既定ブラウザ。相対パス（同フォルダの .md 等）は開いているタブの
-    // ファイルからの相対で解決して新タブで開く（現行 open_link 相当）。
+    // External URLs open in the default browser. Relative paths (e.g. a .md in the
+    // same folder) are resolved against the active tab's file and opened in a new tab.
     void OpenExternal(string url)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
@@ -853,16 +860,16 @@ sealed class MainForm : Form
         }
         else if (url.StartsWith("#"))
         {
-            // 見出しリンクは対象外
+            // Links to headings are not handled
         }
         else
         {
-            Post("menu\nopen-relative\n" + url); // JS がアクティブタブのパスから解決して要求
+            Post("menu\nopen-relative\n" + url); // JS resolves it against the active tab's path
         }
     }
 
-    // doc.local を、開いている HTML のあるフォルダへ向ける（相対パスの画像・CSS 用）。
-    // 空なら割り当てを外す。
+    // Point doc.local at the folder of the open HTML file (for relative images and
+    // CSS). An empty value removes the mapping.
     void SetDocBase(string dir)
     {
         if (web.CoreWebView2 == null) return;
@@ -889,8 +896,8 @@ sealed class MainForm : Form
             OpenExternal(uri);
             return;
         }
-        // <base> の都合でページ内リンク（#見出し）も doc.local/#... になる。
-        // パスが空なら何もしない（ページ内ジャンプは効かない）。
+        // Because of <base>, in-page links (#heading) also become doc.local/#...; with
+        // an empty path there is nothing to open (in-page jumps don't work).
         string rel = uri.Substring(host.Length);
         int cut = rel.IndexOfAny(new[] { '#', '?' });
         if (cut >= 0) rel = rel.Substring(0, cut);
@@ -901,115 +908,131 @@ sealed class MainForm : Form
 
     void NewWindow()
     {
-        // --new を付けて独立した窓として起動（単一インスタンスに参加しない）。
+        // Start an independent window with --new (not part of the single instance).
         try { System.Diagnostics.Process.Start(Application.ExecutablePath, "--new"); }
         catch (Exception ex) { Log.W("NewWindow failed: " + ex.Message); }
     }
 
     void ExportDialog()
     {
-        // 形式を変換して保存。変換（docformats）は JS 側。拡張子ごとに
-        // JS が本文をバイト列にして返す（export-bytes）→ 殻が書く。
+        // Export in another format. JS converts the text to bytes for the chosen
+        // extension (export-bytes) and the shell writes them.
         using (var dlg = new SaveFileDialog())
         {
-            dlg.Filter = "Markdown|*.md|テキスト|*.txt|Word|*.docx|HTML|*.html";
+            dlg.Filter = L.T("Markdown|*.md|Text|*.txt|Word|*.docx|HTML|*.html",
+                             "Markdown|*.md|テキスト|*.txt|Word|*.docx|HTML|*.html");
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             string ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
             Post("export-request\n" + dlg.FileName + "\n" + ext);
         }
     }
 
+    // Switch the UI language: save it, rebuild the menu and tell JS, which
+    // re-renders its labels and re-sends the states behind the menu check marks.
+    void SetLanguage(string lang)
+    {
+        L.Save(lang);
+        var old = MainMenuStrip;
+        var ms = BuildMenu();
+        SuspendLayout();
+        if (old != null) { Controls.Remove(old); old.Dispose(); }
+        Controls.Add(ms);
+        ResumeLayout();
+        if (wantsJumpList) JumpList.TryRegister(Application.ExecutablePath);
+        Post("lang\n" + L.Lang);
+    }
+
     MenuStrip BuildMenu()
     {
         var ms = new MenuStrip();
 
-        var file = new ToolStripMenuItem("ファイル(&F)");
-        file.DropDownItems.Add(MkMenu("新規タブ(&N)", "Ctrl+N", "new"));
-        file.DropDownItems.Add(MkHost("新しいウィンドウ", "Ctrl+Shift+N", "new-window"));
-        file.DropDownItems.Add(MkHost("開く(&O)...", "Ctrl+O", "open"));
-        file.DropDownItems.Add(MkMenu("上書き保存(&S)", "Ctrl+S", "save"));
-        file.DropDownItems.Add(MkMenu("名前を付けて保存...", "Ctrl+Shift+S", "save-as"));
-        file.DropDownItems.Add(MkHost("形式を変換して保存...", null, "export"));
+        var file = new ToolStripMenuItem(L.T("&File", "ファイル(&F)"));
+        file.DropDownItems.Add(MkMenu(L.T("&New tab", "新規タブ(&N)"), "Ctrl+N", "new"));
+        file.DropDownItems.Add(MkHost(L.T("New window", "新しいウィンドウ"), "Ctrl+Shift+N", "new-window"));
+        file.DropDownItems.Add(MkHost(L.T("&Open...", "開く(&O)..."), "Ctrl+O", "open"));
+        file.DropDownItems.Add(MkMenu(L.T("&Save", "上書き保存(&S)"), "Ctrl+S", "save"));
+        file.DropDownItems.Add(MkMenu(L.T("Save as...", "名前を付けて保存..."), "Ctrl+Shift+S", "save-as"));
+        file.DropDownItems.Add(MkHost(L.T("Export as...", "形式を変換して保存..."), null, "export"));
         file.DropDownItems.Add(new ToolStripSeparator());
-        file.DropDownItems.Add(MkMenu("印刷", "Ctrl+Shift+P", "print"));
+        file.DropDownItems.Add(MkMenu(L.T("Print", "印刷"), "Ctrl+Shift+P", "print"));
         file.DropDownItems.Add(new ToolStripSeparator());
-        file.DropDownItems.Add(MkHost("タブを閉じる", "Ctrl+W", "close-tab"));
-        file.DropDownItems.Add(MkHost("終了", null, "quit"));
+        file.DropDownItems.Add(MkHost(L.T("Close tab", "タブを閉じる"), "Ctrl+W", "close-tab"));
+        file.DropDownItems.Add(MkHost(L.T("Exit", "終了"), null, "quit"));
 
-        var edit = new ToolStripMenuItem("編集(&E)");
-        edit.DropDownItems.Add(MkMenu("元に戻す", "Ctrl+Z", "undo"));
-        edit.DropDownItems.Add(MkMenu("やり直し", "Ctrl+Y", "redo"));
+        var edit = new ToolStripMenuItem(L.T("&Edit", "編集(&E)"));
+        edit.DropDownItems.Add(MkMenu(L.T("Undo", "元に戻す"), "Ctrl+Z", "undo"));
+        edit.DropDownItems.Add(MkMenu(L.T("Redo", "やり直し"), "Ctrl+Y", "redo"));
         edit.DropDownItems.Add(new ToolStripSeparator());
-        edit.DropDownItems.Add(MkMenu("切り取り", "Ctrl+X", "cut"));
-        edit.DropDownItems.Add(MkMenu("コピー", "Ctrl+C", "copy"));
-        edit.DropDownItems.Add(MkMenu("貼り付け", "Ctrl+V", "paste"));
-        edit.DropDownItems.Add(MkMenu("すべて選択", "Ctrl+A", "select-all"));
+        edit.DropDownItems.Add(MkMenu(L.T("Cut", "切り取り"), "Ctrl+X", "cut"));
+        edit.DropDownItems.Add(MkMenu(L.T("Copy", "コピー"), "Ctrl+C", "copy"));
+        edit.DropDownItems.Add(MkMenu(L.T("Paste", "貼り付け"), "Ctrl+V", "paste"));
+        edit.DropDownItems.Add(MkMenu(L.T("Select all", "すべて選択"), "Ctrl+A", "select-all"));
         edit.DropDownItems.Add(new ToolStripSeparator());
-        edit.DropDownItems.Add(MkMenu("下線", "Ctrl+U", "underline"));
-        edit.DropDownItems.Add(MkMenu("下線（二重）", "Ctrl+Shift+U", "underline-double"));
-        edit.DropDownItems.Add(MkMenu("選択範囲に一括で下線（引いてある部分は除く）", null, "bulk-underline"));
-        edit.DropDownItems.Add(MkMenu("エスケープ（文字数から除外）", "Ctrl+E", "esc"));
+        edit.DropDownItems.Add(MkMenu(L.T("Underline", "下線"), "Ctrl+U", "underline"));
+        edit.DropDownItems.Add(MkMenu(L.T("Double underline", "下線（二重）"), "Ctrl+Shift+U", "underline-double"));
+        edit.DropDownItems.Add(MkMenu(L.T("Underline selection (skip already underlined parts)", "選択範囲に一括で下線（引いてある部分は除く）"), null, "bulk-underline"));
+        edit.DropDownItems.Add(MkMenu(L.T("Escape (exclude from the count)", "エスケープ（文字数から除外）"), "Ctrl+E", "esc"));
         edit.DropDownItems.Add(new ToolStripSeparator());
-        edit.DropDownItems.Add(MkMenu("検索", "Ctrl+F", "find"));
-        edit.DropDownItems.Add(MkMenu("次を検索", "F3", "find-next"));
-        edit.DropDownItems.Add(MkMenu("前を検索", "Shift+F3", "find-prev"));
-        edit.DropDownItems.Add(MkMenu("置換", "Ctrl+H", "replace"));
-        edit.DropDownItems.Add(MkMenu("行へ移動", "Ctrl+G", "goto-line"));
+        edit.DropDownItems.Add(MkMenu(L.T("Find", "検索"), "Ctrl+F", "find"));
+        edit.DropDownItems.Add(MkMenu(L.T("Find next", "次を検索"), "F3", "find-next"));
+        edit.DropDownItems.Add(MkMenu(L.T("Find previous", "前を検索"), "Shift+F3", "find-prev"));
+        edit.DropDownItems.Add(MkMenu(L.T("Replace", "置換"), "Ctrl+H", "replace"));
+        edit.DropDownItems.Add(MkMenu(L.T("Go to line", "行へ移動"), "Ctrl+G", "goto-line"));
         edit.DropDownItems.Add(new ToolStripSeparator());
-        edit.DropDownItems.Add(MkMenu("日付と時刻", null, "date-time"));
+        edit.DropDownItems.Add(MkMenu(L.T("Date and time", "日付と時刻"), null, "date-time"));
 
-        var view = new ToolStripMenuItem("表示(&V)");
-        // チェックは JS 側の状態メッセージ（preview / wrap / memo）で合わせる。
-        // ショートカットは表示のみ（実処理は webview の window keydown）。
-        miEditor = new ToolStripMenuItem("エディタを表示");
+        var view = new ToolStripMenuItem(L.T("&View", "表示(&V)"));
+        // Check marks follow state messages from JS (editor / preview / wrap / memo).
+        // Shortcut text is display only (the keys are handled in the webview).
+        miEditor = new ToolStripMenuItem(L.T("Show editor", "エディタを表示"));
         miEditor.ShortcutKeyDisplayString = "Ctrl+Shift+E";
         miEditor.Checked = true;
         miEditor.Click += (s, e) => Post("menu\ntoggle-editor");
         view.DropDownItems.Add(miEditor);
-        miPreview = new ToolStripMenuItem("プレビューを表示");
+        miPreview = new ToolStripMenuItem(L.T("Show preview", "プレビューを表示"));
         miPreview.ShortcutKeyDisplayString = "Ctrl+P";
         miPreview.Checked = true;
         miPreview.Click += (s, e) => Post("menu\ntoggle-preview");
         view.DropDownItems.Add(miPreview);
-        miWrap = new ToolStripMenuItem("右端で折り返す");
+        miWrap = new ToolStripMenuItem(L.T("Word wrap", "右端で折り返す"));
         miWrap.Checked = true;
         miWrap.Click += (s, e) => Post("menu\ntoggle-wrap");
         view.DropDownItems.Add(miWrap);
 
-        // 欄は出した順に左から並ぶ。並びの入れ替えは JS 側（movePane）。
-        var order = new ToolStripMenuItem("欄の並び");
-        order.DropDownItems.Add(MkMenu("エディタを左へ", null, "pane-move:editor:-1"));
-        order.DropDownItems.Add(MkMenu("エディタを右へ", null, "pane-move:editor:1"));
+        // Panes are laid out left to right in the order they were shown; JS (movePane) reorders them.
+        var order = new ToolStripMenuItem(L.T("Pane order", "欄の並び"));
+        order.DropDownItems.Add(MkMenu(L.T("Move editor left", "エディタを左へ"), null, "pane-move:editor:-1"));
+        order.DropDownItems.Add(MkMenu(L.T("Move editor right", "エディタを右へ"), null, "pane-move:editor:1"));
         order.DropDownItems.Add(new ToolStripSeparator());
-        order.DropDownItems.Add(MkMenu("プレビューを左へ", null, "pane-move:preview:-1"));
-        order.DropDownItems.Add(MkMenu("プレビューを右へ", null, "pane-move:preview:1"));
+        order.DropDownItems.Add(MkMenu(L.T("Move preview left", "プレビューを左へ"), null, "pane-move:preview:-1"));
+        order.DropDownItems.Add(MkMenu(L.T("Move preview right", "プレビューを右へ"), null, "pane-move:preview:1"));
         order.DropDownItems.Add(new ToolStripSeparator());
-        order.DropDownItems.Add(MkMenu("メモ広場を左へ", null, "pane-move:memo:-1"));
-        order.DropDownItems.Add(MkMenu("メモ広場を右へ", null, "pane-move:memo:1"));
+        order.DropDownItems.Add(MkMenu(L.T("Move notes left", "メモ広場を左へ"), null, "pane-move:memo:-1"));
+        order.DropDownItems.Add(MkMenu(L.T("Move notes right", "メモ広場を右へ"), null, "pane-move:memo:1"));
         view.DropDownItems.Add(order);
 
-        var memoMenu = new ToolStripMenuItem("メモ広場");
-        miMemo = new ToolStripMenuItem("表示する");
+        var memoMenu = new ToolStripMenuItem(L.T("Notes", "メモ広場"));
+        miMemo = new ToolStripMenuItem(L.T("Show", "表示する"));
         miMemo.ShortcutKeyDisplayString = "Ctrl+M";
         miMemo.Click += (s, e) => Post("menu\ntoggle-memo");
         memoMenu.DropDownItems.Add(miMemo);
-        miMemoEdit = new ToolStripMenuItem("編集する");
+        miMemoEdit = new ToolStripMenuItem(L.T("Edit", "編集する"));
         miMemoEdit.Click += (s, e) => Post("menu\ntoggle-memo-edit");
         memoMenu.DropDownItems.Add(miMemoEdit);
         memoMenu.DropDownItems.Add(new ToolStripSeparator());
-        var pickMemo = new ToolStripMenuItem("ファイルを選択...");
+        var pickMemo = new ToolStripMenuItem(L.T("Choose file...", "ファイルを選択..."));
         pickMemo.Click += (s, e) => PickMemoFile();
         memoMenu.DropDownItems.Add(pickMemo);
-        var resetMemo = new ToolStripMenuItem("自動対応に戻す");
+        var resetMemo = new ToolStripMenuItem(L.T("Use the automatic file", "自動対応に戻す"));
         resetMemo.Click += (s, e) => Post("menu\nmemo-reset");
         memoMenu.DropDownItems.Add(resetMemo);
         view.DropDownItems.Add(memoMenu);
 
         view.DropDownItems.Add(new ToolStripSeparator());
-        view.DropDownItems.Add(MkMenu("拡大", "Ctrl++", "zoom-in"));
-        view.DropDownItems.Add(MkMenu("縮小", "Ctrl+-", "zoom-out"));
-        view.DropDownItems.Add(MkMenu("既定の大きさに戻す", "Ctrl+0", "zoom-reset"));
-        var famMenu = new ToolStripMenuItem("書体");
+        view.DropDownItems.Add(MkMenu(L.T("Zoom in", "拡大"), "Ctrl++", "zoom-in"));
+        view.DropDownItems.Add(MkMenu(L.T("Zoom out", "縮小"), "Ctrl+-", "zoom-out"));
+        view.DropDownItems.Add(MkMenu(L.T("Reset zoom", "既定の大きさに戻す"), "Ctrl+0", "zoom-reset"));
+        var famMenu = new ToolStripMenuItem(L.T("Font", "書体"));
         foreach (var fam in new[] {
             "Yu Gothic UI", "Meiryo UI", "Meiryo", "ＭＳ ゴシック",
             "Yu Mincho", "ＭＳ 明朝", "BIZ UDPGothic", "BIZ UDPMincho" })
@@ -1020,6 +1043,20 @@ sealed class MainForm : Form
             famMenu.DropDownItems.Add(fi);
         }
         view.DropDownItems.Add(famMenu);
+
+        // Each language is labeled in its own language so it can be found either way.
+        // The switch runs after the click finishes, because it replaces this menu.
+        var langMenu = new ToolStripMenuItem("Language / 言語");
+        foreach (var pair in new[] { new[] { "en", "English" }, new[] { "ja", "日本語" } })
+        {
+            string code = pair[0];
+            var li = new ToolStripMenuItem(pair[1]);
+            li.Checked = L.Lang == code;
+            li.Click += (s, e) => BeginInvoke((Action)(() => SetLanguage(code)));
+            langMenu.DropDownItems.Add(li);
+        }
+        view.DropDownItems.Add(new ToolStripSeparator());
+        view.DropDownItems.Add(langMenu);
 
         ms.Items.Add(file);
         ms.Items.Add(edit);
@@ -1037,16 +1074,15 @@ sealed class MainForm : Form
         catch (Exception ex)
         {
             Log.W("InitAsync EXCEPTION: " + ex);
-            MessageBox.Show(this, ex.ToString(), "WebView2 初期化に失敗");
+            MessageBox.Show(this, ex.ToString(), L.T("WebView2 failed to initialize", "WebView2 初期化に失敗"));
         }
     }
 
     async Task InitCore()
     {
         Log.W("InitCore start");
-        // %TEMP% 直下だとプロファイルが安定せず、起動のたびにコード
-        // キャッシュ等がコールドになりがち（2026-09-11、体感の遅さの原因調査）。
-        // %APPDATA% 配下の固定パスにして、2回目以降の起動を温める。
+        // Keep the WebView2 profile in a fixed folder under %APPDATA% (not %TEMP%) so
+        // its caches stay warm between launches.
         string userData = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "croco-editor", "wv2");
@@ -1062,11 +1098,11 @@ sealed class MainForm : Form
         var s = web.CoreWebView2.Settings;
         s.AreDefaultContextMenusEnabled = false;
         s.IsStatusBarEnabled = false;
-        s.AreBrowserAcceleratorKeysEnabled = false; // Ctrl+P 等をブラウザに取られない
+        s.AreBrowserAcceleratorKeysEnabled = false; // Keep Ctrl+P etc. from going to the browser
 
         web.CoreWebView2.WebMessageReceived += OnWebMessage;
-        // プレビュー内リンク等で webview 自身が app.local の外へ遷移しようと
-        // したら止めて、外部 URL は既定ブラウザで開く（アプリが飛ばないように）。
+        // If the webview itself tries to navigate away from app.local (e.g. a link in
+        // the preview), cancel it and open external URLs in the default browser.
         web.CoreWebView2.NavigationStarting += (_, e) =>
         {
             var uri = e.Uri ?? "";
@@ -1074,9 +1110,9 @@ sealed class MainForm : Form
             e.Cancel = true;
             OpenExternal(uri);
         };
-        // HTML タブのプレビュー（iframe）内のリンク。iframe 自身を遷移させず、
-        // 外部 URL は既定ブラウザ、doc.local（＝開いているHTMLのフォルダ）の
-        // ファイルはタブで開く。srcdoc の初回読み込み（about:）だけ通す。
+        // Links inside the HTML preview (iframe): never navigate the iframe itself.
+        // External URLs go to the default browser, files on doc.local (the open HTML
+        // file's folder) open in a tab. Only the initial srcdoc load (about:) passes.
         web.CoreWebView2.FrameNavigationStarting += (_, e) =>
         {
             var uri = e.Uri ?? "";
@@ -1096,28 +1132,27 @@ sealed class MainForm : Form
             navigated = true;
             if (!string.IsNullOrEmpty(restoreJson) && restoreJson.Trim().Length > 0)
             {
-                Post("restore\n" + restoreJson);   // 前回のタブを復元
-                if (currentPath != null) OpenAsTab(currentPath); // argv のファイルは追加タブ
+                Post("restore\n" + restoreJson);   // Restore the previous tabs
+                if (currentPath != null) OpenAsTab(currentPath); // A file given on the command line opens as an extra tab
             }
             else
             {
                 SendInitialLoad();
             }
-            foreach (var p in pendingHandoff) OpenAsTab(p); // 準備前に来た受け渡しを流す
+            foreach (var p in pendingHandoff) OpenAsTab(p); // Replay handoffs that arrived before the page was ready
             pendingHandoff.Clear();
         };
-        string url = "https://app.local/index.html";
-        if (Environment.GetEnvironmentVariable("CROCO_SELFTEST") == "1") url += "?selftest=1";
+        string url = "https://app.local/index.html?lang=" + L.Lang;
+        if (Environment.GetEnvironmentVariable("CROCO_SELFTEST") == "1") url += "&selftest=1";
         Log.W("navigate " + url);
         web.CoreWebView2.Navigate(url);
     }
 
-    // editor_app.py read_file の移植。BOMを先に見て、無ければ
-    // utf-8-sig→utf-8→cp932 の順に試す（日本語のテキストはutf-8とは限らない。
-    // BOM無しのShift-JISをそのままUTF-8として読むと文字化けし、自動保存で
-    // 化けた内容が元ファイルへ上書きされる。2026-09-11、実装漏れとして発覚）。
-    // 保存は常に utf-8（write_file と同じ理由：読めた文字コードのまま書き戻すと
-    // そのコードで表せない文字を打った瞬間に保存できなくなる）。
+    // Check for a BOM first; otherwise try strict UTF-8, then cp932. Japanese text is
+    // not always UTF-8, and reading BOM-less Shift-JIS as UTF-8 would garble it and
+    // autosave would write the garbage back.
+    // Saving always uses UTF-8, so characters the original encoding can't represent
+    // can still be saved.
     static string ReadTextSmart(string path)
     {
         byte[] raw = File.ReadAllBytes(path);
@@ -1128,15 +1163,13 @@ sealed class MainForm : Form
 
         try
         {
-            // utf-8-sig 相当：BOMがあれば剥がしてから厳密UTF-8として解釈。
-            // BOM無しなら通常のUTF-8と同じ判定になる（Pythonのutf-8-sig/utf-8の
-            // 2候補が実質同じ結果になるのと同じ）。
+            // Strip a BOM if present and decode as strict UTF-8.
             bool hasBom = raw.Length >= 3 && raw[0] == 0xEF && raw[1] == 0xBB && raw[2] == 0xBF;
             var strictUtf8 = new UTF8Encoding(false, true); // throwOnInvalidBytes
             return hasBom ? strictUtf8.GetString(raw, 3, raw.Length - 3) : strictUtf8.GetString(raw);
         }
         catch (DecoderFallbackException) { }
-        catch (ArgumentException) { } // 空/不正な範囲
+        catch (ArgumentException) { } // empty / invalid range
 
         try
         {
@@ -1144,9 +1177,9 @@ sealed class MainForm : Form
                 932, EncoderFallback.ExceptionFallback, DecoderFallback.ExceptionFallback);
             return strictSjis.GetString(raw);
         }
-        catch (Exception) { } // cp932としても不正
+        catch (Exception) { } // not valid cp932 either
 
-        return Encoding.UTF8.GetString(raw); // 最後の砦。既定の置換文字で読める形にする
+        return Encoding.UTF8.GetString(raw); // Last resort: decode with replacement characters
     }
 
     void RememberMtime(string path)
@@ -1155,11 +1188,8 @@ sealed class MainForm : Form
         catch (Exception ex) { Log.W("RememberMtime: " + ex.Message); }
     }
 
-    // editor_app.py write_bytes（一時ファイルに書いてから差し替える。途中で落ちても
-    // 元のファイルを壊さない）と同じ規則。ドキュメント保存・形式変換保存・
-    // セッション保存に使う。2026-09-11、実装漏れとして発覚・修正。
-    // （メモ広場の保存は旧版 claude_notes.write_note も直接書きで揃っているので
-    // atomicにはしない。旧版に無い安全策を新規に足すのは今回のスコープ外）
+    // Write to a temp file, then replace, so a crash mid-write never corrupts the
+    // original. Used for documents, exports and the session (notes are written directly).
     static void WriteFileAtomic(string path, byte[] data)
     {
         string temp = path + ".croco-tmp";
@@ -1181,16 +1211,16 @@ sealed class MainForm : Form
         WriteFileAtomic(path, enc.GetBytes(text));
     }
 
-    // 起動時の最初のタブ。フロント（main.js）がタブを持つので、殻は
-    // ファイルを読んで渡すだけ。
+    // First tab at startup. The front end (main.js) owns the tabs; the shell just
+    // reads the file and passes it on.
     void SendInitialLoad()
     {
         string path = "", crlf = "0", text = "";
         string ext = currentPath != null ? Path.GetExtension(currentPath).ToLowerInvariant() : "";
-        bool importFmt = ext == ".docx" || ext == ".zip"; // .html/.htm は取り込まず、そのまま編集する
+        bool importFmt = ext == ".docx" || ext == ".zip"; // .html/.htm are opened as-is, not imported
         if (currentPath != null && File.Exists(currentPath) && !importFmt)
         {
-            string raw = ReadTextSmart(currentPath); // BOM 判定＋cp932フォールバック
+            string raw = ReadTextSmart(currentPath); // BOM detection + cp932 fallback
             crlf = raw.Contains("\r\n") ? "1" : "0";
             text = raw.Replace("\r\n", "\n");
             path = currentPath;
@@ -1198,13 +1228,13 @@ sealed class MainForm : Form
         }
         else if (importFmt)
         {
-            BeginInvoke((Action)(() => OpenAsTab(currentPath))); // 未対応メッセージを出す
+            BeginInvoke((Action)(() => OpenAsTab(currentPath))); // Import it into a new tab
         }
         Log.W("SendInitialLoad path=" + (path == "" ? "(new)" : path) + " textLen=" + text.Length);
         Post("load\n" + path + "\n" + crlf + "\n" + text);
     }
 
-    // "\n" 区切りで先頭 n-1 個を割り、残りを最後に入れる（本文は改行を含む）。
+    // Split on "\n" into n-1 fields plus the rest (which may contain newlines).
     static string[] SplitN(string s, int n)
     {
         var parts = new System.Collections.Generic.List<string>();
@@ -1253,7 +1283,7 @@ sealed class MainForm : Form
                 WriteFileAtomic(p[0], Convert.FromBase64String(p[1]));
                 Log.W("exported " + p[0]);
             }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "書き出しに失敗"); }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, L.T("Export failed", "書き出しに失敗")); }
         }
         else if (head == "host")
         {
@@ -1267,8 +1297,8 @@ sealed class MainForm : Form
     void AskCloseTab(string[] p)
     {
         string id = p.Length > 0 ? p[0] : "";
-        string name = p.Length > 1 ? p[1] : "無題";
-        var r = MessageBox.Show(this, "「" + name + "」は保存していません。保存しますか？",
+        string name = p.Length > 1 ? p[1] : L.T("Untitled", "無題");
+        var r = MessageBox.Show(this, L.T("\"" + name + "\" has not been saved. Save it?", "「" + name + "」は保存していません。保存しますか？"),
             "croco-editor", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
         if (r == DialogResult.Cancel) return;
         Post("menu\nclose-decision\n" + id + "\n" + (r == DialogResult.Yes ? "save" : "discard"));
@@ -1276,7 +1306,7 @@ sealed class MainForm : Form
 
     void SetTitleFromJs(string[] p)
     {
-        string name = p.Length > 0 ? p[0] : "無題";
+        string name = p.Length > 0 ? p[0] : L.T("Untitled", "無題");
         bool d = p.Length > 1 && p[1].Trim() == "1";
         Text = (d ? "*" : "") + name + " - croco-editor";
     }
@@ -1285,37 +1315,43 @@ sealed class MainForm : Form
     {
         using (var dlg = new OpenFileDialog())
         {
-            // editor_app.py open_dialog のフィルタ一覧と揃える（docx/html/zipが
-            // 既定の一覧に出ないと、開けること自体を知らないまま「すべてのファイル」
-            // へ切り替えないと見つからない）。
-            dlg.Filter = "開けるすべての形式|*.md;*.markdown;*.txt;*.json;*.tasks;*.docx;*.html;*.htm;*.zip|" +
-                         "テキスト/Markdown|*.md;*.markdown;*.txt|" +
-                         "JSON / タスク|*.json;*.tasks|" +
-                         "Word (.docx)|*.docx|" +
-                         "HTML|*.html;*.htm|" +
-                         "HTML書き出しのzip（Markdownに取り込む）|*.zip|" +
-                         "すべてのファイル|*.*";
+            // List every supported format up front so people can see what opens.
+            dlg.Filter = L.T(
+                "All supported files|*.md;*.markdown;*.txt;*.json;*.tasks;*.docx;*.html;*.htm;*.zip|" +
+                "Text / Markdown|*.md;*.markdown;*.txt|" +
+                "JSON / Tasks|*.json;*.tasks|" +
+                "Word (.docx)|*.docx|" +
+                "HTML|*.html;*.htm|" +
+                "Zipped HTML export (imported as Markdown)|*.zip|" +
+                "All files|*.*",
+                "開けるすべての形式|*.md;*.markdown;*.txt;*.json;*.tasks;*.docx;*.html;*.htm;*.zip|" +
+                "テキスト/Markdown|*.md;*.markdown;*.txt|" +
+                "JSON / タスク|*.json;*.tasks|" +
+                "Word (.docx)|*.docx|" +
+                "HTML|*.html;*.htm|" +
+                "HTML書き出しのzip（Markdownに取り込む）|*.zip|" +
+                "すべてのファイル|*.*");
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             OpenAsTab(dlg.FileName);
         }
     }
 
-    // 指定パスを読み込んで新しいタブとして開くよう JS に伝える。
-    // 参照物（.json/.tasks/README.md）は独立した窓で開く。
+    // Ask JS to open the file in a new tab. Reference files (.json/.tasks/README.md)
+    // open in their own window.
     void OpenAsTab(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) { Log.W("OpenAsTab skip: " + path); return; }
         if (Program.WantsOwnWindow(path))
         {
             try { System.Diagnostics.Process.Start(Application.ExecutablePath, "--new \"" + path + "\""); }
-            catch (Exception ex) { Log.W("own-window 起動失敗: " + ex.Message); }
+            catch (Exception ex) { Log.W("own-window launch failed: " + ex.Message); }
             return;
         }
         string ext = Path.GetExtension(path).ToLowerInvariant();
         if (ext == ".docx" || ext == ".zip")
         {
-            // 取り込み（docformats）は JS 側。バイトを base64 で渡す。
-            // .html/.htm はここに来ない（下でテキストとして開く）。
+            // Importing (docformats) happens in JS; pass the bytes as base64.
+            // .html/.htm don't come here (they are opened as text below).
             byte[] bytes = File.ReadAllBytes(path);
             Log.W("import -> " + path + " bytes=" + bytes.Length);
             Post("import\n" + path + "\n" + ext + "\n" + Convert.ToBase64String(bytes));
@@ -1328,22 +1364,22 @@ sealed class MainForm : Form
         Post("opened\n" + path + "\n" + crlf + "\n" + raw.Replace("\r\n", "\n"));
     }
 
-    // 別インスタンスからの受け渡し。新しいタブで開き、ウィンドウを前面へ。
+    // Handoff from another instance: open in a new tab and bring the window to the front.
     public void Handoff(string path)
     {
         Log.W("handoff: " + (path ?? ""));
         if (!navigated) { if (!string.IsNullOrWhiteSpace(path)) pendingHandoff.Add(path); }
         else OpenAsTab(path);
 
-        // CLAUDE.md: 最小化を解く操作はスナップ/最大化も解くので、最小化時だけ戻す。
+        // Restoring from minimized also undoes snap/maximize, so only restore when minimized.
         if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
         Activate();
         bool t = TopMost;
         TopMost = true;
-        TopMost = t; // 一瞬 TopMost にして確実に前面へ
+        TopMost = t; // Briefly set TopMost to make sure it comes to the front
     }
 
-    // save\n<reqId>\n<crlf>\n<path>\n<本文>
+    // save\n<reqId>\n<crlf>\n<path>\n<text>
     void DoSave(string[] p, bool alwaysAsk)
     {
         string reqId = p.Length > 0 ? p[0] : "0";
@@ -1357,26 +1393,20 @@ sealed class MainForm : Form
         {
             using (var dlg = new SaveFileDialog())
             {
-                dlg.Filter = "Markdown|*.md|HTML|*.html;*.htm|テキスト|*.txt|すべてのファイル|*.*";
-                dlg.FileName = string.IsNullOrEmpty(path) ? "無題.md" : Path.GetFileName(path);
-                if (dlg.ShowDialog(this) != DialogResult.OK) return; // saved を返さない＝据え置き
+                dlg.Filter = L.T("Markdown|*.md|HTML|*.html;*.htm|Text|*.txt|All files|*.*",
+                                 "Markdown|*.md|HTML|*.html;*.htm|テキスト|*.txt|すべてのファイル|*.*");
+                dlg.FileName = string.IsNullOrEmpty(path) ? L.T("Untitled.md", "無題.md") : Path.GetFileName(path);
+                if (dlg.ShowDialog(this) != DialogResult.OK) return; // No "saved" reply: the tab stays as it is
                 target = dlg.FileName;
             }
         }
         else
         {
-            // ディスクの mtime が最後に自分が読み書きした時点と違えば、外部
-            // （別のエディタ等）でも書き換わっているということ。ここで上書き
-            // するとその変更を黙って消す。editor_app.py _autosave_files の
-            // 「無条件の上書きはしない」を踏襲（2026-09-11、実装漏れとして発覚）。
-            //
-            // 自動保存（idle timer）・明示保存（Ctrl+S 等）を問わず、検知したら
-            // その場でどちらを残すか選ばせる（VS Code の「比較／上書き」相当。
-            // 本人指摘：バックアップを残すだけでは「委ねる」の名ばかり、選ばせる
-            // 方が本質。「打っている最中に割り込む」問題は別の形で塞がっている
-            // ——ダイアログで保留（キャンセル）を選ぶと conflict フラグが立ち、
-            // JS 側 scheduleAutosave が以後この保留中タブの自動保存を止めるので、
-            // 打ち続けても同じ会話が毎回のidle tickで出し直されはしない）。
+            // If the file's mtime differs from our last read or write, something else
+            // changed it, and overwriting would silently discard that change. Whether
+            // this is an autosave or an explicit save, ask which version to keep.
+            // Choosing Cancel sets the tab's conflict flag and JS stops autosaving
+            // that tab, so the question isn't repeated while typing.
             string full = Path.GetFullPath(target);
             DateTime known;
             if (File.Exists(full) && knownMtime.TryGetValue(full, out known))
@@ -1384,17 +1414,21 @@ sealed class MainForm : Form
                 DateTime disk = File.GetLastWriteTimeUtc(full);
                 if (disk != known)
                 {
-                    Log.W("save 競合検出・選択を出す: " + full);
+                    Log.W("save conflict detected, asking: " + full);
                     var r = MessageBox.Show(this,
-                        "「" + Path.GetFileName(full) + "」は外部でも変更されています。\n\n" +
-                        "はい：自分の内容で上書きする（外部の変更は消えます）\n" +
-                        "いいえ：外部の内容を読み込む（このタブの未保存の変更は消えます）\n" +
-                        "キャンセル：このまま保留する（あとでもう一度保存し直す）",
+                        L.T("\"" + Path.GetFileName(full) + "\" has also been changed outside croco-editor.\n\n" +
+                            "Yes: overwrite it with your version (the external changes are lost)\n" +
+                            "No: load the external version (this tab's unsaved changes are lost)\n" +
+                            "Cancel: leave it for now (save again later)",
+                            "「" + Path.GetFileName(full) + "」は外部でも変更されています。\n\n" +
+                            "はい：自分の内容で上書きする（外部の変更は消えます）\n" +
+                            "いいえ：外部の内容を読み込む（このタブの未保存の変更は消えます）\n" +
+                            "キャンセル：このまま保留する（あとでもう一度保存し直す）"),
                         "croco-editor", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
                     if (r == DialogResult.Cancel)
                     {
-                        // 保留：conflict を立てて JS 側の自動保存を止める
-                        // （キャンセルするたびに毎回また聞かれるのを防ぐ）。
+                        // Leave it pending: flag the conflict so JS stops autosaving this
+                        // tab (otherwise every idle tick would ask again).
                         Post("conflict\n" + reqId + "\n" + full);
                         return;
                     }
@@ -1406,14 +1440,14 @@ sealed class MainForm : Form
                         Post("reloaded\n" + reqId + "\n" + freshCrlf + "\n" + fresh.Replace("\r\n", "\n"));
                         return;
                     }
-                    // はい：このまま下へ落ちて上書きする
+                    // Yes: fall through and overwrite
                 }
             }
         }
 
-        if (crlf) body = body.Replace("\n", "\r\n"); // 元の改行を保つ
+        if (crlf) body = body.Replace("\n", "\r\n"); // Keep the original line endings
         WriteTextAtomic(target, body, new UTF8Encoding(false));
-        RememberMtime(target); // 自分で書いた直後の mtime を覚え直す（次回の競合判定の基準）
+        RememberMtime(target); // Record the mtime we just wrote (baseline for the next conflict check)
         Log.W("wrote " + target + " chars=" + body.Length);
         Post("saved\n" + reqId + "\n" + target);
     }
@@ -1427,32 +1461,30 @@ sealed class MainForm : Form
 
     void UpdateTitle()
     {
-        string name = currentPath != null ? Path.GetFileName(currentPath) : "無題";
+        string name = currentPath != null ? Path.GetFileName(currentPath) : L.T("Untitled", "無題");
         Text = name + " - croco-editor";
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         if (sessionSaveTimer != null) sessionSaveTimer.Stop();
-        // 使い捨て窓（--new）は前回の続きを上書きしない（editor_app.py ephemeral）。
-        // これを guard し忘れると、README.md/.tasks 等の独立窓を閉じるたびに
-        // 本来のセッションが単一タブの内容で踏み潰されるバグになる。
-        if (!selfTest && participatesSingleInstance) SaveSession(); // タブ構成・ウィンドウ位置を残す
+        // --new windows must not overwrite the main session; otherwise closing a
+        // README.md/.tasks window would replace it with that single tab.
+        if (!selfTest && participatesSingleInstance) SaveSession(); // Keep tabs and window position
 
-        // 自動保存が効いているので通常ここで未保存はまず無い（新規の無題タブに
-        // 書きかけがある場合のみ）。
+        // With autosave, unsaved changes here are rare (only new untitled tabs).
         if (anyDirty && !closingConfirmed)
         {
-            var r = MessageBox.Show(this, "保存していない変更があります。保存しますか？",
+            var r = MessageBox.Show(this, L.T("You have unsaved changes. Save them?", "保存していない変更があります。保存しますか？"),
                 "croco-editor", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
             if (r == DialogResult.Cancel) { e.Cancel = true; return; }
             if (r == DialogResult.Yes)
             {
-                Post("flushSave");      // JS がアクティブなタブの save を投げ返す
+                Post("flushSave");      // JS sends back a save for the active tab
                 e.Cancel = true;
                 return;
             }
-            closingConfirmed = true;   // 「いいえ」= そのまま閉じる
+            closingConfirmed = true;   // "No": close without saving
         }
         base.OnFormClosing(e);
     }

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ja">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -9,10 +9,11 @@
   <body>
     <div id="tabs"></div>
     <div id="toolbar">
-      <label>上限 <input type="number" id="limit" value="0" min="0" step="100" /> 字</label>
+      <!-- Labels are filled in by main.js (applyStaticText) in the UI language -->
+      <label><span id="lbl-limit"></span> <input type="number" id="limit" value="0" min="0" step="100" /> <span id="lbl-unit"></span></label>
       <span id="presets"></span>
-      <label><input type="checkbox" id="ws" checked /> 空白も数える</label>
-      <label><input type="checkbox" id="strip" /> 記法を数えない</label>
+      <label><input type="checkbox" id="ws" checked /> <span id="lbl-ws"></span></label>
+      <label><input type="checkbox" id="strip" /> <span id="lbl-strip"></span></label>
     </div>
     <div id="split">
       <div id="editor"></div>
@@ -20,11 +21,11 @@
       <div id="preview"></div>
       <div id="gutter2" class="gutter hidden"></div>
       <div id="memo" class="hidden"></div>
-      <div id="empty" class="hidden">表示する欄がありません（Ctrl+Shift+E：エディタ　Ctrl+P：プレビュー　Ctrl+M：メモ広場）</div>
+      <div id="empty" class="hidden"></div>
     </div>
     <div id="statusbar">
-      <span id="count">0 字</span>
-      <span id="pos">1 行 1 列</span>
+      <span id="count"></span>
+      <span id="pos"></span>
       <span id="pt">11 pt</span>
       <span id="path"></span>
     </div>
