@@ -29,7 +29,8 @@ const R = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships";
 
 const DOCX_EXT = [".docx"];
-const HTML_EXT = [".html", ".htm", ".zip"];
+// .html/.htm はエディタ本体がそのまま開く（取り込みは zip の中の .html だけ）。
+const HTML_EXT = [".zip"];
 
 // =====================================================================
 // 小さいヘルパ

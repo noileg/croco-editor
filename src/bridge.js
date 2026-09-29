@@ -26,8 +26,9 @@
 //     saveas\n<reqId>\n<crlf>\n<パス>\n<本文>
 //       名前を付けて保存（必ずダイアログ）
 //     title\n<名前>\n<0|1>                ウィンドウタイトル（名前, 未保存か）
-//     wrap\n<0|1> / preview\n<0|1>        メニューのチェックを合わせる
+//     wrap\n<0|1> / preview\n<0|1> / editor\n<0|1>  メニューのチェックを合わせる
 //     host\n<cmd>                          殻の機能を呼ぶ（new-window 等）
+//     docbase\n<フォルダ>                  HTML プレビューの相対パス解決先（doc.local）
 //     dirty\n<0|1> / diag\n<文字列>       互換・デバッグ用
 
 const wv = typeof window !== "undefined" && window.chrome && window.chrome.webview;
@@ -191,8 +192,16 @@ export function setWrap(on) {
 export function setAnyDirty(on) {
   if (wv) wv.postMessage("anydirty\n" + (on ? "1" : "0"));
 }
+export function setEditor(on) {
+  if (wv) wv.postMessage("editor\n" + (on ? "1" : "0"));
+}
 export function setPreview(on) {
   if (wv) wv.postMessage("preview\n" + (on ? "1" : "0"));
+}
+// HTML タブのプレビューが相対パスの画像・CSS を読めるよう、殻の仮想ホスト
+// doc.local をそのHTMLのフォルダへ向けてもらう（空なら解除）。
+export function setDocBase(folder) {
+  if (wv) wv.postMessage("docbase\n" + (folder || ""));
 }
 export function menuToHost(cmd) {
   if (wv) wv.postMessage("host\n" + cmd);

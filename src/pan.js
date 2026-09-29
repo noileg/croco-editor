@@ -9,7 +9,9 @@
 
 export const PAN_GAIN = 7;
 
-export function attachMiddleDragPan(scroller) {
+// win：ドラッグ中のマウス移動などを拾う window。既定は自分の window。
+// HTML プレビューの iframe の中は別の window なので、そちらを渡す。
+export function attachMiddleDragPan(scroller, win = window) {
   let a = null;
 
   const onMove = (e) => {
@@ -22,8 +24,8 @@ export function attachMiddleDragPan(scroller) {
   const end = () => {
     if (!a) return;
     a = null;
-    window.removeEventListener("mousemove", onMove, true);
-    window.removeEventListener("mouseup", onUp, true);
+    win.removeEventListener("mousemove", onMove, true);
+    win.removeEventListener("mouseup", onUp, true);
     scroller.style.cursor = "";
   };
   const onUp = (e) => {
@@ -34,8 +36,8 @@ export function attachMiddleDragPan(scroller) {
     e.preventDefault(); // Chromium 標準のオートスクロールと二重に効かせない
     e.stopPropagation(); // CodeMirror にキャレット移動をさせない
     a = { x: e.clientX, y: e.clientY, sx: scroller.scrollLeft, sy: scroller.scrollTop };
-    window.addEventListener("mousemove", onMove, true);
-    window.addEventListener("mouseup", onUp, true);
+    win.addEventListener("mousemove", onMove, true);
+    win.addEventListener("mouseup", onUp, true);
     scroller.style.cursor = "grabbing";
   };
 
@@ -43,8 +45,8 @@ export function attachMiddleDragPan(scroller) {
   scroller.addEventListener("auxclick", (e) => {
     if (e.button === 1) e.stopPropagation();
   }, true);
-  window.addEventListener("blur", end);
-  window.addEventListener("keydown", (e) => {
+  win.addEventListener("blur", end);
+  win.addEventListener("keydown", (e) => {
     if (e.key === "Escape") end();
   });
 }

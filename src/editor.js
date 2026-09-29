@@ -26,6 +26,8 @@ import {
   selectAll,
 } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
+import { html } from "@codemirror/lang-html";
+import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import {
   search,
   searchKeymap,
@@ -61,6 +63,19 @@ export const FONT_FAMILIES = [
 ];
 const DEFAULT_FONT_PT = 11; // editor_app.py DEFAULT_FONT_SIZE
 
+// .html / .htm は Markdown ではなくHTMLとして編集する（プレビューも描画結果になる。
+// 判定は main.js もこれを使う）。
+export function isHtmlPath(path) {
+  return !!path && /\.html?$/i.test(path);
+}
+function languageFor(path) {
+  // 自動閉じタグは切る（打っていないタグが勝手に入ると下書きの邪魔になる）。
+  // Markdown の方は従来どおり色を付けないので、色分けはHTMLのときだけ足す。
+  return isHtmlPath(path)
+    ? [html({ autoCloseTags: false }), syntaxHighlighting(defaultHighlightStyle, { fallback: true })]
+    : markdown();
+}
+
 const refreshAnn = Annotation.define(); // 設定変更でデコレーションだけ作り直す
 const loadAnn = Annotation.define(); // 殻からの全文差し替え（読み込み）を編集と区別する
 const OVER = Decoration.mark({ class: "cm-over" });
@@ -91,6 +106,7 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
   let current = { limit: 0, stripMarkdown: false, includeWhitespace: true };
 
   const wrapComp = new Compartment();
+  const langComp = new Compartment(); // タブごとの言語（Markdown / HTML）
   let wrapOn = lsGet("croco.wrap", "1") === "1";
 
   let fontPt = parseInt(lsGet("croco.fontPt", DEFAULT_FONT_PT), 10) || DEFAULT_FONT_PT;
@@ -173,21 +189,21 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
     }
   });
 
-  function extensions() {
+  function extensions(path) {
     return [
       history(),
       drawSelection(),
       highlightActiveLine(),
       wrapComp.of(wrapOn ? EditorView.lineWrapping : []),
-      markdown(),
+      langComp.of(languageFor(path)),
       search(),
       keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
       decoPlugin,
       listeners,
     ];
   }
-  function makeState(text = "") {
-    return EditorState.create({ doc: text, extensions: extensions() });
+  function makeState(text = "", path = null) {
+    return EditorState.create({ doc: text, extensions: extensions(path) });
   }
 
   const view = new EditorView({ parent, state: makeState("") });
@@ -269,6 +285,10 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
         changes: { from: 0, to: view.state.doc.length, insert: text },
         annotations: silent ? [loadAnn.of(true)] : [],
       });
+    },
+    // 名前を付けて保存で拡張子が変わったときなど、いまのタブの言語を付け替える。
+    setLanguage(path) {
+      view.dispatch({ effects: langComp.reconfigure(languageFor(path)) });
     },
     // アクティブなタブの字数設定を反映（上限ハイライトを描き直す）。
     setActiveSettings(s) {

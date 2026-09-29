@@ -9,7 +9,7 @@
     "build": "node build.mjs",
     "build:host": "node csharp/build_host.mjs",
     "check": "node test/check.mjs",
-    "test": "node test/check.mjs && node test/tags.check.mjs && node test/fmt.check.mjs"
+    "test": "node test/check.mjs && node test/tags.check.mjs && node test/fmt.check.mjs && node test/pan.check.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@codemirror/commands": "^6.0.0",
+    "@codemirror/lang-html": "^6.0.0",
     "@codemirror/lang-markdown": "^6.0.0",
     "@codemirror/language": "^6.0.0",
     "@codemirror/search": "^6.0.0",

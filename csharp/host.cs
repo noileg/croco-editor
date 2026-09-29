@@ -436,8 +436,12 @@ sealed class MainForm : Form
 {
     readonly WebView2 web = new WebView2();
     string currentPath;   // 起動時に argv で渡されたファイル（初期タイトル用）
+    // HTML タブのプレビュー（iframe）が相対パスの画像・CSS を読むための仮想ホスト
+    // doc.local が指しているフォルダ。アクティブな HTML タブが変わるたびに JS が知らせてくる。
+    string docBaseDir;
     bool navigated;
     ToolStripMenuItem miPreview;   // 表示 › プレビュー（チェック）
+    ToolStripMenuItem miEditor;    // 表示 › エディタ（チェック。タブごとの状態を JS が知らせる）
     ToolStripMenuItem miWrap;      // 表示 › 右端で折り返す（チェック）
     ToolStripMenuItem miMemo;      // 表示 › メモ広場 › 表示する（チェック）
     ToolStripMenuItem miMemoEdit;  // 表示 › メモ広場 › 編集する（チェック）
@@ -857,6 +861,44 @@ sealed class MainForm : Form
         }
     }
 
+    // doc.local を、開いている HTML のあるフォルダへ向ける（相対パスの画像・CSS 用）。
+    // 空なら割り当てを外す。
+    void SetDocBase(string dir)
+    {
+        if (web.CoreWebView2 == null) return;
+        try
+        {
+            if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir))
+            {
+                web.CoreWebView2.ClearVirtualHostNameToFolderMapping("doc.local");
+                docBaseDir = null;
+                return;
+            }
+            web.CoreWebView2.SetVirtualHostNameToFolderMapping(
+                "doc.local", dir, CoreWebView2HostResourceAccessKind.Allow);
+            docBaseDir = dir;
+        }
+        catch (Exception ex) { Log.W("SetDocBase: " + ex.Message); }
+    }
+
+    void OpenFromPreviewFrame(string uri)
+    {
+        const string host = "https://doc.local/";
+        if (!uri.StartsWith(host))
+        {
+            OpenExternal(uri);
+            return;
+        }
+        // <base> の都合でページ内リンク（#見出し）も doc.local/#... になる。
+        // パスが空なら何もしない（ページ内ジャンプは効かない）。
+        string rel = uri.Substring(host.Length);
+        int cut = rel.IndexOfAny(new[] { '#', '?' });
+        if (cut >= 0) rel = rel.Substring(0, cut);
+        if (rel.Length == 0 || docBaseDir == null) return;
+        string full = Path.GetFullPath(Path.Combine(docBaseDir, Uri.UnescapeDataString(rel).Replace('/', '\\')));
+        OpenAsTab(full);
+    }
+
     void NewWindow()
     {
         // --new を付けて独立した窓として起動（単一インスタンスに参加しない）。
@@ -919,6 +961,11 @@ sealed class MainForm : Form
         var view = new ToolStripMenuItem("表示(&V)");
         // チェックは JS 側の状態メッセージ（preview / wrap / memo）で合わせる。
         // ショートカットは表示のみ（実処理は webview の window keydown）。
+        miEditor = new ToolStripMenuItem("エディタを表示");
+        miEditor.ShortcutKeyDisplayString = "Ctrl+Shift+E";
+        miEditor.Checked = true;
+        miEditor.Click += (s, e) => Post("menu\ntoggle-editor");
+        view.DropDownItems.Add(miEditor);
         miPreview = new ToolStripMenuItem("プレビューを表示");
         miPreview.ShortcutKeyDisplayString = "Ctrl+P";
         miPreview.Checked = true;
@@ -928,6 +975,18 @@ sealed class MainForm : Form
         miWrap.Checked = true;
         miWrap.Click += (s, e) => Post("menu\ntoggle-wrap");
         view.DropDownItems.Add(miWrap);
+
+        // 欄は出した順に左から並ぶ。並びの入れ替えは JS 側（movePane）。
+        var order = new ToolStripMenuItem("欄の並び");
+        order.DropDownItems.Add(MkMenu("エディタを左へ", null, "pane-move:editor:-1"));
+        order.DropDownItems.Add(MkMenu("エディタを右へ", null, "pane-move:editor:1"));
+        order.DropDownItems.Add(new ToolStripSeparator());
+        order.DropDownItems.Add(MkMenu("プレビューを左へ", null, "pane-move:preview:-1"));
+        order.DropDownItems.Add(MkMenu("プレビューを右へ", null, "pane-move:preview:1"));
+        order.DropDownItems.Add(new ToolStripSeparator());
+        order.DropDownItems.Add(MkMenu("メモ広場を左へ", null, "pane-move:memo:-1"));
+        order.DropDownItems.Add(MkMenu("メモ広場を右へ", null, "pane-move:memo:1"));
+        view.DropDownItems.Add(order);
 
         var memoMenu = new ToolStripMenuItem("メモ広場");
         miMemo = new ToolStripMenuItem("表示する");
@@ -1014,6 +1073,16 @@ sealed class MainForm : Form
             if (uri.StartsWith("https://app.local/") || uri.StartsWith("about:")) return;
             e.Cancel = true;
             OpenExternal(uri);
+        };
+        // HTML タブのプレビュー（iframe）内のリンク。iframe 自身を遷移させず、
+        // 外部 URL は既定ブラウザ、doc.local（＝開いているHTMLのフォルダ）の
+        // ファイルはタブで開く。srcdoc の初回読み込み（about:）だけ通す。
+        web.CoreWebView2.FrameNavigationStarting += (_, e) =>
+        {
+            var uri = e.Uri ?? "";
+            if (uri.StartsWith("about:") || uri.StartsWith("data:")) return;
+            e.Cancel = true;
+            OpenFromPreviewFrame(uri);
         };
         web.CoreWebView2.NewWindowRequested += (_, e) =>
         {
@@ -1118,7 +1187,7 @@ sealed class MainForm : Form
     {
         string path = "", crlf = "0", text = "";
         string ext = currentPath != null ? Path.GetExtension(currentPath).ToLowerInvariant() : "";
-        bool importFmt = ext == ".docx" || ext == ".html" || ext == ".htm" || ext == ".zip";
+        bool importFmt = ext == ".docx" || ext == ".zip"; // .html/.htm は取り込まず、そのまま編集する
         if (currentPath != null && File.Exists(currentPath) && !importFmt)
         {
             string raw = ReadTextSmart(currentPath); // BOM 判定＋cp932フォールバック
@@ -1170,10 +1239,12 @@ sealed class MainForm : Form
         else if (head == "anydirty") anyDirty = body.Trim() == "1";
         else if (head == "wrap") { if (miWrap != null) miWrap.Checked = body.Trim() == "1"; }
         else if (head == "preview") { if (miPreview != null) miPreview.Checked = body.Trim() == "1"; }
+        else if (head == "editor") { if (miEditor != null) miEditor.Checked = body.Trim() == "1"; }
         else if (head == "memowrap") { if (miMemo != null) miMemo.Checked = body.Trim() == "1"; }
         else if (head == "memoedit") { if (miMemoEdit != null) miMemoEdit.Checked = body.Trim() == "1"; }
         else if (head == "memo-watch") ConfigureMemo(SplitN(body, 5));
         else if (head == "memo-save") SaveMemo(body);
+        else if (head == "docbase") SetDocBase(body.Trim());
         else if (head == "export-bytes")
         {
             var p = SplitN(body, 2);
@@ -1221,7 +1292,8 @@ sealed class MainForm : Form
                          "テキスト/Markdown|*.md;*.markdown;*.txt|" +
                          "JSON / タスク|*.json;*.tasks|" +
                          "Word (.docx)|*.docx|" +
-                         "HTML（Docsのウェブページ書き出し）|*.html;*.htm;*.zip|" +
+                         "HTML|*.html;*.htm|" +
+                         "HTML書き出しのzip（Markdownに取り込む）|*.zip|" +
                          "すべてのファイル|*.*";
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
             OpenAsTab(dlg.FileName);
@@ -1240,9 +1312,10 @@ sealed class MainForm : Form
             return;
         }
         string ext = Path.GetExtension(path).ToLowerInvariant();
-        if (ext == ".docx" || ext == ".html" || ext == ".htm" || ext == ".zip")
+        if (ext == ".docx" || ext == ".zip")
         {
             // 取り込み（docformats）は JS 側。バイトを base64 で渡す。
+            // .html/.htm はここに来ない（下でテキストとして開く）。
             byte[] bytes = File.ReadAllBytes(path);
             Log.W("import -> " + path + " bytes=" + bytes.Length);
             Post("import\n" + path + "\n" + ext + "\n" + Convert.ToBase64String(bytes));
@@ -1284,7 +1357,7 @@ sealed class MainForm : Form
         {
             using (var dlg = new SaveFileDialog())
             {
-                dlg.Filter = "Markdown|*.md|テキスト|*.txt|すべてのファイル|*.*";
+                dlg.Filter = "Markdown|*.md|HTML|*.html;*.htm|テキスト|*.txt|すべてのファイル|*.*";
                 dlg.FileName = string.IsNullOrEmpty(path) ? "無題.md" : Path.GetFileName(path);
                 if (dlg.ShowDialog(this) != DialogResult.OK) return; // saved を返さない＝据え置き
                 target = dlg.FileName;

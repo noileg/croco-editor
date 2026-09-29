@@ -1,11 +1,11 @@
 // 新版の入口（webview 側）。タブ ＋ ツールバー ＋ 編集 ＋ プレビュー ＋
 // ステータスバー。メニューバーは C# 殻（WinForms）側。ファイルの読み書きも殻。
 // 殻の外（素のブラウザ）でも編集・プレビュー・字数は動く（保存だけ効かない）。
-import { createEditor } from "./editor.js";
+import { createEditor, isHtmlPath } from "./editor.js";
 import { renderMarkdown } from "./preview.js";
 import { analyze } from "./count.js";
 import { attachMiddleDragPan } from "./pan.js";
-import { readMarkdown, toBytes } from "./docformats.js";
+import { readMarkdown, toBytes, htmlToMarkdown } from "./docformats.js";
 import * as bridge from "./bridge.js";
 
 const PRESETS = [400, 600, 800, 1000, 1200, 1600, 2000]; // editor_app.py PRESETS
@@ -102,17 +102,19 @@ function stripMarkdownForPath(path) {
   return ext === ".md" || ext === ".markdown";
 }
 
-function addTab({ path = null, crlf = false, text = "", settings = null, dirty = false, memoOverride = null, title = null } = {}) {
+function addTab({ path = null, crlf = false, text = "", settings = null, dirty = false, memoOverride = null, title = null, editorOn } = {}) {
   const t = {
     id: seq++,
     path,
     crlf,
     title, // path が無いとき（取り込み等）にタブへ出す名前
-    state: ed.makeState(text),
+    state: ed.makeState(text, path),
     settings: settings ? { ...newSettings(), ...settings } : newSettings(),
     dirty,
     conflict: false, // 外部でも変更あり・自動保存を停止中（editor_app.py doc.conflict）
     memoOverride,
+    // エディタ欄を出すか（タブごと）。既定は Markdown なら出す・HTML なら出さない（描画だけ見る）。
+    editorOn: editorOn === undefined ? !isHtmlPath(path) : editorOn,
   };
   tabs.push(t);
   switchTab(t.id);
@@ -130,6 +132,7 @@ function switchTab(id) {
   ed.setActiveSettings(t.settings);
   syncToolbar();
   updatePath();
+  applyEditorVisibility(); // このタブのエディタ欄の出し入れを欄の並びに反映
   lastRendered = null;
   refresh(ed.getText());
   sendTitle();
@@ -142,7 +145,7 @@ function switchTab(id) {
 // --- メモ広場 --------------------------------------------------------
 function toggleMemo(force) {
   memoVisible = force === undefined ? !memoVisible : force;
-  memoEl.classList.toggle("hidden", !memoVisible);
+  layoutPanes();
   bridge.setMemoMenu(memoVisible, memoEditable);
   updateMemoWatch();
 }
@@ -206,7 +209,8 @@ function pushSession() {
       active: tabs.findIndex((t) => t.id === activeId),
       memoVisible,
       memoEditable,
-      splitRatio,
+      paneOrder,
+      paneRatios,
       tabs: tabs.map((t) => ({
         path: t.path || null,
         crlf: t.crlf,
@@ -217,6 +221,7 @@ function pushSession() {
         limit: t.settings.limit,
         ws: t.settings.includeWhitespace,
         strip: t.settings.stripMarkdown,
+        editor: t.editorOn,
         memoOverride: t.memoOverride || null,
       })),
     };
@@ -339,11 +344,86 @@ function refresh(text) {
   const { total } = analyze(text, s.limit, s.stripMarkdown, s.includeWhitespace);
   countEl.textContent = `${total} 字`;
   countEl.classList.toggle("over", s.limit > 0 && total > s.limit);
-  if (previewOn && text !== lastRendered) {
-    previewEl.innerHTML = renderMarkdown(text);
-    lastRendered = text;
-    syncPreviewToEditor(); // 描き直したらエディタの位置へ合わせ直す
+  // HTML タブと Markdown タブでは描き方が違うので、種別も込みで前回と比べる。
+  const key = (activeIsHtml() ? "H:" : "M:") + text;
+  if (previewOn && key !== lastRendered) {
+    const first = lastRendered === null;
+    lastRendered = key;
+    clearTimeout(htmlTimer);
+    if (activeIsHtml()) {
+      // 打鍵ごとに iframe を作り直すとちらつくので少し待つ（切り替え直後は即）
+      htmlTimer = setTimeout(renderHtmlNow, first ? 0 : 250);
+    } else {
+      htmlFrame = null;
+      previewEl.classList.remove("html-mode");
+      previewEl.innerHTML = renderMarkdown(text);
+      syncPreviewToEditor(); // 描き直したらエディタの位置へ合わせ直す
+    }
   }
+}
+
+// --- HTML タブのプレビュー ---------------------------------------------
+// .html/.htm のタブは markdown-it を通さず、iframe にそのまま描画する。
+// sandbox に allow-scripts を入れない＝スクリプトは動かさない（プレビュー内から
+// 殻へメッセージを送れる口を作らないため）。allow-same-origin は、親がiframeの中を
+// 触る（スクロール同期・ショートカットの転送）のに要る。スクリプトが無いので安全側。
+let htmlFrame = null;
+let htmlTimer = null;
+let docBase = null; // 殻の doc.local が今指しているフォルダ
+
+function activeIsHtml() {
+  const t = active();
+  return !!t && isHtmlPath(t.path);
+}
+
+// 相対パスの画像・CSS が doc.local（＝そのHTMLのフォルダ）から読めるよう <base> を足す。
+// doctype より前に置くと quirks モードになるので、head → html → doctype の後、の順に探す。
+function withBase(text) {
+  const tag = '<base href="https://doc.local/">';
+  for (const re of [/<head(\s[^>]*)?>/i, /<html(\s[^>]*)?>/i, /<!doctype[^>]*>/i]) {
+    if (re.test(text)) return text.replace(re, (m) => m + tag);
+  }
+  return tag + text;
+}
+
+function renderHtmlNow() {
+  const t = active();
+  if (!previewOn || !t || !isHtmlPath(t.path)) return;
+  const folder = t.path.replace(/[\\/][^\\/]*$/, "");
+  const draw = () => {
+    const cur = active();
+    if (!previewOn || !cur || !isHtmlPath(cur.path)) return;
+    if (!htmlFrame || !previewEl.contains(htmlFrame)) {
+      previewEl.textContent = "";
+      previewEl.classList.add("html-mode");
+      htmlFrame = document.createElement("iframe");
+      htmlFrame.setAttribute("sandbox", "allow-same-origin allow-modals");
+      htmlFrame.addEventListener("load", onHtmlFrameLoad);
+      previewEl.appendChild(htmlFrame);
+    }
+    htmlFrame.srcdoc = withBase(ed.getText());
+  };
+  if (folder !== docBase) {
+    // フォルダの割り当ては殻への非同期メッセージなので、届くのを少し待ってから描く
+    docBase = folder;
+    bridge.setDocBase(folder);
+    setTimeout(draw, 60);
+  } else {
+    draw();
+  }
+}
+
+function onHtmlFrameLoad() {
+  const w = htmlFrame && htmlFrame.contentWindow;
+  if (!w) return;
+  // iframe の中にフォーカスがあってもアプリのショートカットが効くようにする
+  w.addEventListener("keydown", onAppKeydown, true);
+  w.addEventListener("wheel", onAppWheel, { capture: true, passive: false });
+  // 中ボタンドラッグでのパンも、エディタ・Markdownのプレビューと同じ挙動にする。
+  // srcdoc を描き直すたびに中身の window は作り直されるので、読み込みごとに付ける。
+  const d = htmlFrame.contentDocument;
+  if (d && d.scrollingElement) attachMiddleDragPan(d.scrollingElement, w);
+  syncPreviewToEditor();
 }
 
 function applySettings() {
@@ -352,10 +432,25 @@ function applySettings() {
   pushSession();
 }
 
+// エディタ欄の表示・非表示（タブごと。HTMLのタブは既定で消えている）。
+// 欄の並びと比率は layoutPanes（下の「欄の並びと比率」）が決める。
+function applyEditorVisibility() {
+  const t = active();
+  layoutPanes();
+  bridge.setEditor(!t || t.editorOn);
+}
+
+function toggleEditor(force) {
+  const t = active();
+  if (!t) return;
+  t.editorOn = force === undefined ? !t.editorOn : force;
+  applyEditorVisibility();
+  pushSession();
+}
+
 function togglePreview(force) {
   previewOn = force === undefined ? !previewOn : force;
-  previewEl.classList.toggle("hidden", !previewOn);
-  splitEl.classList.toggle("no-preview", !previewOn);
+  layoutPanes();
   if (previewOn) {
     lastRendered = null;
     refresh(ed.getText());
@@ -391,11 +486,9 @@ bridge.onLoad(({ path, crlf, text }) => {
   // 起動時の最初のタブ（前回セッションが無いとき）
   addTab({ path, crlf, text, settings: { stripMarkdown: stripMarkdownForPath(path) } });
 });
-bridge.onRestore(({ tabs: saved, active: activeIdx, memoVisible: mv, memoEditable: me, splitRatio: sr }) => {
-  if (typeof sr === "number" && sr > 0) {
-    splitRatio = sr;
-    applySplit();
-  }
+bridge.onRestore(({ tabs: saved, active: activeIdx, memoVisible: mv, memoEditable: me, paneOrder: po, paneRatios: pr }) => {
+  // 旧版の splitRatio（エディタとプレビューの2分割だけの比率）は引き継がない。
+  if (pr && typeof pr === "object") paneRatios = pr;
   // 前回開いていたタブを復元
   for (const s of saved || []) {
     addTab({
@@ -405,6 +498,7 @@ bridge.onRestore(({ tabs: saved, active: activeIdx, memoVisible: mv, memoEditabl
       settings: { limit: s.limit || 0, includeWhitespace: s.ws !== false, stripMarkdown: !!s.strip },
       dirty: !!s.dirty,
       memoOverride: s.memoOverride || null,
+      editorOn: typeof s.editor === "boolean" ? s.editor : undefined,
     });
   }
   if (tabs.length === 0) {
@@ -414,6 +508,11 @@ bridge.onRestore(({ tabs: saved, active: activeIdx, memoVisible: mv, memoEditabl
   }
   memoEditable = !!me;
   if (mv) toggleMemo(true);
+  // 並びは、タブを復元し終えてから戻す（途中の切り替えで崩れないように）
+  if (Array.isArray(po)) {
+    paneOrder = po.filter((n) => PANE_NAMES.includes(n));
+    layoutPanes();
+  }
 });
 bridge.onOpened(({ path, crlf, text }) => {
   // 既に同じファイルを開いていればそのタブへ切り替える。殻は毎回ファイルを
@@ -445,11 +544,15 @@ bridge.onOpened(({ path, crlf, text }) => {
     cur.crlf = crlf;
     cur.settings = { ...newSettings(), stripMarkdown: stripMarkdownForPath(path) };
     cur.memoOverride = null;
+    cur.editorOn = !isHtmlPath(path);
+    ed.setLanguage(path);
+    lastRendered = null;
     ed.setText(text, true);
     ed.setActiveSettings(cur.settings);
     cur.state = ed.getState();
     syncToolbar();
     updatePath();
+    applyEditorVisibility();
     sendTitle();
     renderTabs();
     updateMemoWatch();
@@ -466,7 +569,14 @@ bridge.onSaved(({ reqId, path }) => {
     closeAfterSave.delete(reqId);
     return;
   }
+  const pathChanged = !!path && path !== t.path;
   if (path) t.path = path;
+  if (pathChanged && t.id === activeId) {
+    // .md → .html などで種別が変わりうる。言語もプレビューも付け替える。
+    ed.setLanguage(t.path);
+    lastRendered = null;
+    refresh(ed.getText());
+  }
   t.conflict = false; // 書けた＝解消（明示保存で「はい」＝上書きを選んだ場合を含む）
   setDirty(t, false);
   if (t.id === activeId) {
@@ -504,7 +614,7 @@ bridge.onReloaded(({ reqId, crlf, text }) => {
     ed.setText(text, true); // silent＝dirty化しない
     t.state = ed.getState();
   } else {
-    t.state = ed.makeState(text);
+    t.state = ed.makeState(text, t.path);
   }
   setDirty(t, false);
   if (t.id === activeId) {
@@ -530,7 +640,7 @@ bridge.onExternalUpdate(({ path, crlf, text }) => {
     t.state = ed.getState();
     refresh(text);
   } else {
-    t.state = ed.makeState(text);
+    t.state = ed.makeState(text, t.path);
   }
   renderTabs();
 });
@@ -562,7 +672,20 @@ bridge.onImport(({ path, ext, b64 }) => {
 // 「形式を変換して保存」。殻が保存先と拡張子を渡す → その形式のバイトを返す。
 bridge.onExportRequest(({ path, ext }) => {
   try {
-    bridge.sendExportBytes(path, toBytes(ext, ed.getText(), active() ? active().crlf : false));
+    const t = active();
+    const crlf = t ? t.crlf : false;
+    const text = ed.getText();
+    const e = ext.toLowerCase();
+    if (t && isHtmlPath(t.path)) {
+      // HTML タブ：HTML へはそのまま、それ以外へは Markdown を経由して変換する
+      const bytes =
+        e === ".html" || e === ".htm"
+          ? new TextEncoder().encode(crlf ? text.replace(/\n/g, "\r\n") : text)
+          : toBytes(ext, htmlToMarkdown(text), crlf);
+      bridge.sendExportBytes(path, bytes);
+    } else {
+      bridge.sendExportBytes(path, toBytes(ext, text, crlf));
+    }
   } catch (e) {
     bridge.menuToHost("import-failed\n" + (e && e.message ? e.message : e));
   }
@@ -572,6 +695,11 @@ bridge.onExportRequest(({ path, ext }) => {
 // cmd は現行の「ファイル」「編集」「表示」メニュー項目に対応。
 function doCommand(cmd) {
   const m = ed.menu;
+  if (cmd.startsWith("pane-move:")) {
+    const [name, dir] = cmd.slice("pane-move:".length).split(":");
+    movePane(name, Number(dir));
+    return;
+  }
   if (cmd.startsWith("family:")) {
     m.setFamily(cmd.slice("family:".length));
     ed.focus();
@@ -581,7 +709,7 @@ function doCommand(cmd) {
     const p = cmd.slice("memo-file\n".length);
     if (active()) active().memoOverride = p;
     memoVisible = true;
-    memoEl.classList.remove("hidden");
+    layoutPanes();
     bridge.setMemoMenu(memoVisible, memoEditable);
     memoLast = null;
     updateMemoWatch();
@@ -618,7 +746,11 @@ function doCommand(cmd) {
     save: () => saveTab(active(), false),
     "save-as": () => saveTab(active(), true),
     "close-tab": () => closeTab(activeId),
-    print: () => window.print(),
+    print: () => {
+      // HTML タブは iframe の中身を印刷する（親ごとだと iframe の見えている分しか出ない）
+      if (activeIsHtml() && previewOn && htmlFrame && htmlFrame.contentWindow) htmlFrame.contentWindow.print();
+      else window.print();
+    },
     undo: m.undo,
     redo: m.redo,
     "select-all": m.selectAll,
@@ -640,6 +772,7 @@ function doCommand(cmd) {
     "zoom-reset": m.zoomReset,
     "toggle-wrap": m.toggleWrap,
     "toggle-preview": () => togglePreview(),
+    "toggle-editor": () => toggleEditor(),
     "toggle-memo": () => toggleMemo(),
     "toggle-memo-edit": () => toggleMemoEdit(),
     "new-window": () => bridge.menuToHost("new-window"),
@@ -676,6 +809,7 @@ const KEYMAP = [
   ["c", false, "PageUp", "prev-tab"], // 現行 editor_app の割り当て
   ["c", false, "PageDown", "next-tab"],
   ["c", false, "KeyP", "toggle-preview"],
+  ["c", true, "KeyE", "toggle-editor"],
   ["c", false, "KeyM", "toggle-memo"],
   ["c", false, "KeyF", "find"],
   ["c", false, "KeyH", "replace"],
@@ -690,38 +824,32 @@ const KEYMAP = [
   ["n", false, "F3", "find-next"],
   ["n", true, "F3", "find-prev"],
 ];
-window.addEventListener(
-  "keydown",
-  (e) => {
-    if (e.altKey || e.metaKey) return;
-    // IME変換中のキー（Enter/Space/矢印等での確定・候補選択）を横取りしない。
-    // KEYMAP は全項目 Ctrl 併用（F3系を除く）で変換中に押される組合せとは
-    // 重ならないため実害は無いはずだが、念のため素通しさせる。
-    if (e.isComposing || e.keyCode === 229) return;
-    for (const [ctrl, shift, code, cmd] of KEYMAP) {
-      if (ctrl === "c" && !e.ctrlKey) continue;
-      if (ctrl === "n" && e.ctrlKey) continue;
-      if (!!shift !== e.shiftKey) continue;
-      if (e.code !== code) continue;
-      e.preventDefault();
-      e.stopPropagation();
-      doCommand(cmd);
-      return;
-    }
-  },
-  true,
-);
+function onAppKeydown(e) {
+  if (e.altKey || e.metaKey) return;
+  // IME変換中のキー（Enter/Space/矢印等での確定・候補選択）を横取りしない。
+  // KEYMAP は全項目 Ctrl 併用（F3系を除く）で変換中に押される組合せとは
+  // 重ならないため実害は無いはずだが、念のため素通しさせる。
+  if (e.isComposing || e.keyCode === 229) return;
+  for (const [ctrl, shift, code, cmd] of KEYMAP) {
+    if (ctrl === "c" && !e.ctrlKey) continue;
+    if (ctrl === "n" && e.ctrlKey) continue;
+    if (!!shift !== e.shiftKey) continue;
+    if (e.code !== code) continue;
+    e.preventDefault();
+    e.stopPropagation();
+    doCommand(cmd);
+    return;
+  }
+}
+window.addEventListener("keydown", onAppKeydown, true);
 
 // Ctrl+ホイールでズーム（現行 _on_ctrl_wheel）。
-window.addEventListener(
-  "wheel",
-  (e) => {
-    if (!e.ctrlKey) return;
-    e.preventDefault();
-    doCommand(e.deltaY < 0 ? "zoom-in" : "zoom-out");
-  },
-  { capture: true, passive: false },
-);
+function onAppWheel(e) {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  doCommand(e.deltaY < 0 ? "zoom-in" : "zoom-out");
+}
+window.addEventListener("wheel", onAppWheel, { capture: true, passive: false });
 
 // --- ツールバー（アクティブなタブの設定を書き換える） -------------------
 limitEl.addEventListener("input", () => {
@@ -796,27 +924,104 @@ window.addEventListener("keydown", (e) => {
 });
 window.addEventListener("blur", hideCtx);
 
-// --- 仕切り（エディタ↔プレビュー）のドラッグ。比率は session に覚える -----
-let splitRatio = 0.5;
-const gutter = $("gutter1");
-function applySplit() {
-  const r = Math.max(0.15, Math.min(0.85, splitRatio));
-  document.getElementById("editor").style.flexBasis = r * 100 + "%";
+// --- 欄の並びと比率 -----------------------------------------------------
+// エディタ・プレビュー・メモ広場は対等な3つの欄で、それぞれ独立に出し入れできる。
+//  - 並びは「出した順」（paneOrder の先頭が左端）。消した欄は並びから外れ、
+//    また出すと右端に付く。メニューの「欄の並び」で入れ替えられる
+//  - 幅の比率は「どの欄が出ているかの組み合わせ」ごとに覚える（paneRatios）。
+//    キーは欄名を並べ替えて "+" で繋いだもの、値は 欄名 → 比率。欄ごとに持つので、
+//    並びを変えても各欄の比率は保たれる。session に覚える
+//  - 全部消すと空白（中央に案内だけ）。エディタ欄へ勝手に戻したりはしない
+const PANE_NAMES = ["editor", "preview", "memo"];
+const PANES = { editor: $("editor"), preview: previewEl, memo: memoEl };
+const gutters = [$("gutter1"), $("gutter2")];
+const emptyEl = $("empty");
+const MIN_PANE = 140; // editor_app.py MIN_PANE
+let paneOrder = ["editor", "preview"];
+let paneRatios = {}; // { "editor+preview": { editor: 0.5, preview: 0.5 }, ... }
+let paneFr = []; // いま出している欄の比率（paneOrder と同じ並び。合計1）
+
+function paneVisible(name) {
+  if (name === "editor") {
+    const t = active();
+    return !t || t.editorOn;
+  }
+  return name === "preview" ? previewOn : memoVisible;
 }
-gutter.addEventListener("mousedown", (e) => {
-  e.preventDefault();
-  const rect = splitEl.getBoundingClientRect();
-  const onMove = (ev) => {
-    splitRatio = (ev.clientX - rect.left) / rect.width;
-    applySplit();
-  };
-  const onUp = () => {
-    window.removeEventListener("mousemove", onMove, true);
-    window.removeEventListener("mouseup", onUp, true);
-    pushSession();
-  };
-  window.addEventListener("mousemove", onMove, true);
-  window.addEventListener("mouseup", onUp, true);
+
+function paneKey() {
+  return [...paneOrder].sort().join("+");
+}
+
+function layoutPanes() {
+  paneOrder = paneOrder.filter(paneVisible);
+  for (const name of PANE_NAMES) {
+    if (paneVisible(name) && !paneOrder.includes(name)) paneOrder.push(name);
+  }
+  const n = paneOrder.length;
+  const saved = paneRatios[paneKey()] || {};
+  const fr = paneOrder.map((p) => (saved[p] > 0 ? saved[p] : 1 / n));
+  const sum = fr.reduce((a, b) => a + b, 0);
+  paneFr = fr.map((f) => f / sum);
+  for (const name of PANE_NAMES) {
+    const el = PANES[name];
+    const i = paneOrder.indexOf(name);
+    el.classList.toggle("hidden", i < 0);
+    if (i >= 0) {
+      el.style.order = String(2 * i);
+      el.style.flex = `${paneFr[i] * 1000} 1 0`; // 基準幅0・伸びる割合で比率を表す
+    }
+  }
+  gutters.forEach((g, i) => {
+    g.classList.toggle("hidden", n < i + 2);
+    g.style.order = String(2 * i + 1);
+  });
+  emptyEl.classList.toggle("hidden", n > 0);
+  pushSession();
+}
+
+function movePane(name, dir) {
+  const i = paneOrder.indexOf(name);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= paneOrder.length) return;
+  [paneOrder[i], paneOrder[j]] = [paneOrder[j], paneOrder[i]];
+  layoutPanes();
+}
+
+// 隣り合う2つの欄の境目をドラッグ。その2つの合計は変えず、配分だけ動かす。
+gutters.forEach((g, gi) => {
+  g.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    const a = PANES[paneOrder[gi]];
+    const b = PANES[paneOrder[gi + 1]];
+    if (!a || !b) return;
+    const left = a.getBoundingClientRect().left;
+    const span = b.getBoundingClientRect().right - left - g.offsetWidth; // 2つの欄の幅の合計
+    const pair = paneFr[gi] + paneFr[gi + 1];
+    splitEl.classList.add("dragging");
+    const onMove = (ev) => {
+      // ボタンが離されているのに mouseup を取り逃がした場合は、そこで終える
+      if (ev.buttons === 0) {
+        onUp();
+        return;
+      }
+      const min = span >= MIN_PANE * 2 ? MIN_PANE : 0;
+      const wa = Math.max(min, Math.min(span - min, ev.clientX - left - g.offsetWidth / 2));
+      paneFr[gi] = (pair * wa) / span;
+      paneFr[gi + 1] = pair - paneFr[gi];
+      a.style.flex = `${paneFr[gi] * 1000} 1 0`;
+      b.style.flex = `${paneFr[gi + 1] * 1000} 1 0`;
+    };
+    const onUp = () => {
+      splitEl.classList.remove("dragging");
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+      paneRatios[paneKey()] = Object.fromEntries(paneOrder.map((p, i) => [p, paneFr[i]]));
+      pushSession();
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+  });
 });
 
 // --- エディタ → プレビューのスクロール同期（現行 _sync_preview 相当） -----
@@ -827,7 +1032,19 @@ let syncRaf = 0;
 function syncPreviewToEditor() {
   syncRaf = 0;
   if (!previewOn) return;
+  if (active() && !active().editorOn) return; // エディタ欄が消えているので合わせる相手がいない
   const sv = ed.view.scrollDOM;
+  if (activeIsHtml()) {
+    // HTML には行番号の目印が無いので、スクロール量の割合で合わせる
+    try {
+      const w = htmlFrame && htmlFrame.contentWindow;
+      const d = htmlFrame && htmlFrame.contentDocument;
+      if (!w || !d || !d.documentElement) return;
+      const ratio = sv.scrollTop / Math.max(1, sv.scrollHeight - sv.clientHeight);
+      w.scrollTo(0, Math.max(0, ratio * (d.documentElement.scrollHeight - w.innerHeight)));
+    } catch {}
+    return;
+  }
   const rect = sv.getBoundingClientRect();
   let topLine = 1;
   try {
