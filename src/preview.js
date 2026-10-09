@@ -64,14 +64,30 @@ function sourceLine(md) {
   });
 }
 
+// A list item ends at its own line: an unindented line right after it starts a new
+// paragraph instead of continuing the item (CommonMark's "lazy continuation" is off).
+// Registered only as a paragraph terminator, so it fires only when a paragraph asks
+// whether to stop. sCount < blkIndent holds only for lazy lines inside a list item.
+function noLazyListContinuation(md) {
+  md.block.ruler.before(
+    "paragraph",
+    "no_lazy_list_continuation",
+    (state, line, _endLine, silent) => silent && state.sCount[line] < state.blkIndent,
+    { alt: ["paragraph"] },
+  );
+}
+
+// Line breaks and list items are read the same way as the .docx/.html export
+// (docformats.js), so the preview shows what the export will look like.
 const md = new MarkdownIt({
   html: false, // No raw HTML; only the tags above get through, via the plugin
   linkify: false,
-  breaks: false,
+  breaks: true, // A single newline is a line break
   typographer: false,
 });
 md.use(underlineTags);
 md.use(sourceLine);
+md.use(noLazyListContinuation);
 
 // Images are not loaded; they show as an [image: alt] placeholder.
 md.renderer.rules.image = (tokens, idx) => {

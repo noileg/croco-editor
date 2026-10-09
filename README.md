@@ -100,6 +100,7 @@ csharp/out/croco-editor.exe [file path]
 - Show / hide the editor pane: Ctrl+Shift+E (View > Show editor). Per tab: shown by default for Markdown tabs, hidden for HTML tabs (rendering only). Restored at the next launch
 - Follows the editor's scrolling
 - Understands `<u>`, `<uu>`, `<ublock>`, `<qblock>` and `<esc>`. Tables render as ordinary Markdown tables
+- Line breaks are read the same way as the .docx/.html export, not as standard Markdown: a single newline is shown as a line break, and a list item ends at its own line (an unindented line right after it is a separate paragraph, even without a blank line)
 - Links: external URLs open in the default browser; relative paths are resolved as files in the same folder and opened in a new tab
 
 ### View
@@ -142,6 +143,7 @@ node test/check.mjs        # character count
 node test/tags.check.mjs   # underline toggles
 node test/fmt.check.mjs    # docx/html conversion
 node test/pan.check.mjs    # middle-button drag scrolling
+node test/preview.check.mjs  # preview line breaks and list items
 ```
 
 `tags.check.mjs` and `fmt.check.mjs` compare against a Python reference implementation

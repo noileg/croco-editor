@@ -101,6 +101,7 @@ csharp/out/croco-editor.exe [ファイルパス]
 - エディタ欄の表示・非表示の切り替え：Ctrl+Shift+E（メニューの表示›エディタを表示）。タブごとの状態で、Markdownのタブは表示、HTMLのタブは非表示（描画だけ）が既定。前回終了時の状態は復元される
 - エディタのスクロールに連動して動く
 - `<u>`・`<uu>`・`<ublock>`・`<qblock>`・`<esc>`を解釈して表示する。表は通常のMarkdownの表として描画される
+- 改行は標準のMarkdownではなく、docx・htmlへの書き出しと同じ扱いで表示する。改行1つでそのまま改行され、箇条書きの項目はその行で終わる（直後に字下げせずに書いた行は、空行が無くても別の段落になる）
 - リンク：外部URLは既定のブラウザで開き、相対パスは同じフォルダのファイルとして解決したうえで新しいタブで開く
 
 ### 表示
@@ -144,6 +145,7 @@ node test/check.mjs        # 字数カウント
 node test/tags.check.mjs   # 下線トグル
 node test/fmt.check.mjs    # docx/html 変換
 node test/pan.check.mjs    # 中ボタンドラッグのスクロール
+node test/preview.check.mjs  # プレビューの改行と箇条書き
 ```
 
 `tags.check.mjs` と `fmt.check.mjs` は、Python の参照実装（このリポジトリには含まない）の
