@@ -1,7 +1,10 @@
 // Toggling <u>/<uu>/<esc> on the selection, and bulk underlining.
 // Each takes (text, selection start, selection end) and returns
-// (new text, new start, new end). The caller replaces the whole text and then
-// restores the selection.
+// { text, start, end, changes }: the new text, the new selection, and the tag
+// insertions/removals that turn the old text into the new one. `changes` is a
+// CodeMirror change list whose positions all refer to the old text. The editor
+// applies only these changes, not a whole-text replacement, so the scroll position
+// and the measured line heights outside the edited spots are kept.
 
 const RE_U_TAG = /<\/?u\s*>/gi;
 const RE_UU_TAG = /<\/?uu\s*>/gi;
@@ -81,19 +84,35 @@ export function togglePair(text, start, end, open, close) {
   const lo = (s) => s.toLowerCase();
   if (lo(inner).startsWith(open) && lo(inner).endsWith(close)) {
     const core = inner.slice(open.length, inner.length - close.length);
-    return { text: before + core + after, start, end: start + core.length };
+    return {
+      text: before + core + after,
+      start,
+      end: start + core.length,
+      changes: [
+        { from: start, to: start + open.length },
+        { from: end - close.length, to: end },
+      ],
+    };
   }
   if (lo(before).endsWith(open) && lo(after).startsWith(close)) {
     return {
       text: before.slice(0, -open.length) + inner + after.slice(close.length),
       start: start - open.length,
       end: end - open.length,
+      changes: [
+        { from: start - open.length, to: start },
+        { from: end, to: end + close.length },
+      ],
     };
   }
   return {
     text: before + open + inner + close + after,
     start: start + open.length,
     end: end + open.length,
+    changes: [
+      { from: start, insert: open },
+      { from: end, insert: close },
+    ],
   };
 }
 
@@ -140,7 +159,7 @@ export function bulkUnderline(text, start, end) {
     i = j;
   }
 
-  if (gaps.length === 0) return { text, start, end };
+  if (gaps.length === 0) return { text, start, end, changes: [] };
 
   let out = text;
   for (let k = gaps.length - 1; k >= 0; k--) {
@@ -148,5 +167,9 @@ export function bulkUnderline(text, start, end) {
     out = out.slice(0, s) + "<u>" + out.slice(s, e) + "</u>" + out.slice(e);
   }
   const added = gaps.length * ("<u>".length + "</u>".length);
-  return { text: out, start, end: end + added };
+  const changes = [];
+  for (const [s, e] of gaps) {
+    changes.push({ from: s, insert: "<u>" }, { from: e, insert: "</u>" });
+  }
+  return { text: out, start, end: end + added, changes };
 }

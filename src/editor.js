@@ -184,9 +184,29 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
     }
   });
 
+  // Undo/redo keep the scroll position while the selection they restore is at least
+  // partly on screen, and scroll it into view as usual only when it is entirely off
+  // screen. CodeMirror's own undo/redo always scroll the selection head to the nearest
+  // edge, which moves the view even when the undone spot is visible (for example after
+  // a tag command whose selection starts above the view).
+  // A scroll snapshot added as an effect overrides the transaction's scrollIntoView
+  // flag. Like in tagCmd, it is taken before the change and mapped through it.
+  // `view` is assigned below; this only runs on transactions, which come after that.
+  const undoKeepsScroll = EditorState.transactionExtender.of((tr) => {
+    if (!tr.isUserEvent("undo") && !tr.isUserEvent("redo")) return null;
+    if (tr.startState !== view.state) return null;
+    const r = view.scrollDOM.getBoundingClientRect();
+    const top = tr.changes.mapPos(view.lineBlockAtHeight(r.top - view.documentTop).from, -1);
+    const bottom = tr.changes.mapPos(view.lineBlockAtHeight(r.bottom - view.documentTop).to, 1);
+    const sel = tr.newSelection.main;
+    if (sel.to < top || sel.from > bottom) return null;
+    return { effects: view.scrollSnapshot().map(tr.changes) };
+  });
+
   function extensions(path) {
     return [
       history(),
+      undoKeepsScroll,
       drawSelection(),
       highlightActiveLine(),
       wrapComp.of(wrapOn ? EditorView.lineWrapping : []),
@@ -209,15 +229,23 @@ export function createEditor(parent, { onChange, onCursor, onZoom, onWrap }) {
   // It neither moves the caret nor triggers Chromium's built-in autoscroll.
   attachMiddleDragPan(view.scrollDOM);
 
-  // Tag commands replace the whole text and then restore the selection.
+  // Tag commands apply only the tag insertions/removals and leave the scroll position
+  // where it was. Replacing the whole text instead would make CodeMirror forget the
+  // measured line heights and map its scroll anchor to the start of the document, so
+  // the view would jump, and scrolling the selection into view would then put it at
+  // the top or bottom edge.
+  // The scroll snapshot is taken before the change and mapped through it (effects in
+  // a transaction are not mapped by that transaction's own changes). It keeps the
+  // line at the top of the view in place, also when the view is scrolled to the bottom.
   function tagCmd(fn) {
     return () => {
       const { from, to } = view.state.selection.main;
       const res = fn(view.state.doc.toString(), from, to);
+      const changes = view.state.changes(res.changes);
       view.dispatch({
-        changes: { from: 0, to: view.state.doc.length, insert: res.text },
+        changes,
         selection: { anchor: res.start, head: res.end },
-        scrollIntoView: true,
+        effects: view.scrollSnapshot().map(changes),
       });
       view.focus();
     };
