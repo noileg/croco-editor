@@ -1,6 +1,6 @@
 {
   "name": "croco-editor",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "croco-editor: a Markdown drafting editor for Windows. A C# (WinForms) + WebView2 shell hosting a CodeMirror 6 + markdown-it front end.",
   "type": "module",
