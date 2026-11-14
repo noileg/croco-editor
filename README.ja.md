@@ -18,10 +18,12 @@ markdown-it のフロントエンドを載せている。
 
 Claude Codeを使っていて、croco-editorで開いたまま裏で他プロセスがファイルを
 書き換えるケースを検知したいなら、このリポジトリ直下の `hooks_setup.exe` と
-`file_watch_track.exe`・`file_watch_mark_edit.exe`・`file_watch_check.exe` を
-同じフォルダにダウンロードして、`hooks_setup.exe` を実行する（croco-editor本体とは
-別のもの、管理者権限不要、ダブルクリックでインストール、`hooks_setup.exe -uninstall`
-で削除）。実行時に通知の言語（English / 日本語）を尋ねられる。Claude Codeが
+`file_watch_track.exe`・`file_watch_mark_edit.exe`・`file_watch_check.exe`・
+`file_watch_cleanup.exe` を同じフォルダにダウンロードして、`hooks_setup.exe` を実行する
+（croco-editor本体とは別のもの、管理者権限不要、ダブルクリックでインストール、
+`hooks_setup.exe -uninstall` で削除）。実行時に通知の言語（English / 日本語）を尋ねられる。
+あわせて、PCの起動より前に残ったフックのstateを消す `file_watch_cleanup.exe` を、
+サインイン時に走るように登録する。Claude Codeが
 入っていない環境で実行しても何も壊さず、その旨を表示して終わる。ソースは
 [claude-file-watch-hooks](https://gist.github.com/noileg/0b5e85b6628907d1f2c79d4920d05303)。
 

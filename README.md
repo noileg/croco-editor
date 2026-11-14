@@ -17,11 +17,13 @@ are an installer checkbox. To build from source, see below.
 
 If you use Claude Code and want to know when a file open in croco-editor is changed
 behind your back by another process, download `hooks_setup.exe` together with
-`file_watch_track.exe`, `file_watch_mark_edit.exe` and `file_watch_check.exe` from the
-top of this repository into one folder and run `hooks_setup.exe` (separate from
-croco-editor itself; no admin rights; double-click to install,
-`hooks_setup.exe -uninstall` to remove). It asks which language (English / 日本語) the
-notices should use. On a machine without Claude Code it changes nothing and says so.
+`file_watch_track.exe`, `file_watch_mark_edit.exe`, `file_watch_check.exe` and
+`file_watch_cleanup.exe` from the top of this repository into one folder and run
+`hooks_setup.exe` (separate from croco-editor itself; no admin rights; double-click to
+install, `hooks_setup.exe -uninstall` to remove). It asks which language (English /
+日本語) the notices should use. It also registers `file_watch_cleanup.exe` to run at
+sign-in, where it removes the hooks' state left from before the PC was last started.
+On a machine without Claude Code it changes nothing and says so.
 Source: [claude-file-watch-hooks](https://gist.github.com/noileg/0b5e85b6628907d1f2c79d4920d05303).
 
 ## Layout
